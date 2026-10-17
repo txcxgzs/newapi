@@ -116,6 +116,7 @@ export function UsersMutateDrawer({
   const currentUser = useAuthStore((s) => s.auth.user)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
+  const [giftQuotaDialogOpen, setGiftQuotaDialogOpen] = useState(false)
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
@@ -166,6 +167,7 @@ export function UsersMutateDrawer({
   const tokensOnly = currencyMeta.kind === 'tokens'
 
   const currentQuotaRaw = form.watch('quota_dollars') || 0
+  const currentGiftQuotaRaw = form.watch('gift_quota_dollars') || 0
   const selectedRole = form.watch('role')
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
@@ -479,6 +481,45 @@ export function UsersMutateDrawer({
 
                   <FormField
                     control={form.control}
+                    name='gift_quota_dollars'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('Gift Quota ({{currency}})', {
+                            currency: currencyLabel,
+                          })}
+                        </FormLabel>
+                        <div className='flex gap-2'>
+                          <FormControl>
+                            <Input
+                              value={
+                                tokensOnly
+                                  ? String(field.value || 0)
+                                  : (field.value || 0).toFixed(6)
+                              }
+                              readOnly
+                              className='flex-1'
+                            />
+                          </FormControl>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            onClick={() => setGiftQuotaDialogOpen(true)}
+                          >
+                            <Pencil className='mr-1 h-4 w-4' />
+                            {t('Adjust Gift Quota')}
+                          </Button>
+                        </div>
+                        <FormDescription>
+                          {formatQuota(parseQuotaFromDollars(field.value || 0))}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
                     name='remark'
                     render={({ field }) => (
                       <FormItem>
@@ -599,6 +640,18 @@ export function UsersMutateDrawer({
           onOpenChange={setQuotaDialogOpen}
           userId={currentRow.id}
           currentQuota={parseQuotaFromDollars(currentQuotaRaw || 0)}
+          onSuccess={refreshUserData}
+        />
+      )}
+
+      {/* Adjust Gift Quota Dialog */}
+      {currentRow && (
+        <UserQuotaDialog
+          kind='gift'
+          open={giftQuotaDialogOpen}
+          onOpenChange={setGiftQuotaDialogOpen}
+          userId={currentRow.id}
+          currentQuota={parseQuotaFromDollars(currentGiftQuotaRaw || 0)}
           onSuccess={refreshUserData}
         />
       )}

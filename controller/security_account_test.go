@@ -412,7 +412,7 @@ func TestSecurityAccountProfileReadsPasswordStatusInOneQuery(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			user, identity := setupSecurityEnrollmentTest(t)
-			updates := map[string]any{"access_token": "private-profile-token", "remark": "private-profile-remark"}
+			updates := map[string]any{"access_token": "private-profile-token", "remark": "private-profile-remark", "gift_quota": 5000}
 			if !hasPassword {
 				updates["password"] = ""
 			}
@@ -430,6 +430,7 @@ func TestSecurityAccountProfileReadsPasswordStatusInOneQuery(t *testing.T) {
 			assert.Empty(t, profile.Remark)
 			assert.Equal(t, user.AuthVersion, profile.AuthVersion)
 			assert.Equal(t, user.Group, profile.Group)
+			assert.Equal(t, 5000, profile.GiftQuota)
 			require.NoError(t, model.DB.Callback().Query().Remove("profile_query_count"))
 
 			response := securityEnrollmentRequest(http.MethodGet, "/api/user/self", "", "", identity, GetSelf)
@@ -440,6 +441,7 @@ func TestSecurityAccountProfileReadsPasswordStatusInOneQuery(t *testing.T) {
 			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 			require.True(t, result.Success, response.Body.String())
 			assert.Equal(t, hasPassword, result.Data["has_password"])
+			assert.Equal(t, float64(5000), result.Data["gift_quota"])
 			assert.NotContains(t, result.Data, "password")
 			assert.NotContains(t, result.Data, "access_token")
 			assert.NotContains(t, result.Data, "remark")

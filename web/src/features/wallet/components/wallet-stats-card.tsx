@@ -16,12 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Activity, BarChart3, WalletCards } from 'lucide-react'
+import { Activity, BarChart3, Gift, WalletCards } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatQuota } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 import type { UserWalletData } from '../types'
 
@@ -76,8 +77,24 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
     },
   ]
 
+  const showGiftBalance = (props.user?.gift_quota ?? 0) > 0
+  if (showGiftBalance) {
+    stats.push({
+      label: t('Gift Balance'),
+      value: formatQuota(props.user?.gift_quota ?? 0),
+      description: t('Gift quota granted by administrators'),
+      icon: Gift,
+      tone: 'warning',
+    })
+  }
+
   return (
-    <div className='grid grid-cols-3 divide-x rounded-lg border'>
+    <div
+      className={cn(
+        'grid divide-x rounded-lg border',
+        showGiftBalance ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+      )}
+    >
       {stats.map((item) => (
         <div key={item.label} className='min-w-0 px-2.5 py-2.5 sm:px-5 sm:py-4'>
           <div className='flex items-center gap-1.5 sm:gap-2.5'>

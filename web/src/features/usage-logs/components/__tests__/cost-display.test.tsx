@@ -44,6 +44,7 @@ describe('log cost display', () => {
     i18next.addResourceBundle('en', 'translation', {
       Subscription: 'Subscription',
       Wallet: 'Wallet',
+      Gift: 'Gift',
       'Includes tool-call surcharge': 'Includes tool-call surcharge',
     })
   })
@@ -118,6 +119,23 @@ describe('log cost display', () => {
     expect(screen.queryByRole('img', { name: 'Wallet' })).not.toBeInTheDocument()
   })
 
+  test('keeps the gift marker on a gift-billed log when billing sources are hidden', () => {
+    renderCost({
+      quota: 5000,
+      other: { billing_source: 'gift', subscription_consumed: 12500 },
+      showBillingSource: false,
+    })
+
+    expect(screen.getByText('$0.01')).toBeVisible()
+    expect(screen.getByRole('img', { name: 'Gift' })).toBeVisible()
+    expect(
+      screen.queryByRole('img', { name: 'Subscription' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('img', { name: 'Wallet' })
+    ).not.toBeInTheDocument()
+  })
+
   test('keeps legacy cost visible without inventing a funding source', () => {
     renderCost({ quota: 5000, other: null })
 
@@ -150,6 +168,7 @@ describe('log cost display', () => {
   test.each([
     { source: 'subscription', label: 'Subscription' },
     { source: 'wallet', label: 'Wallet' },
+    { source: 'gift', label: 'Gift' },
   ])(
     'reveals the $source label on hover and keyboard focus',
     async ({ source, label }) => {

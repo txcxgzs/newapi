@@ -1232,6 +1232,27 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
+test('saves the gift quota flag from the routing tab into the update payload', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+
+  await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))
+  const giftToggle = screen.getByRole('switch', { name: 'Use Gift Quota' })
+  expect(giftToggle).not.toBeChecked()
+  await user.click(giftToggle)
+  expect(giftToggle).toBeChecked()
+
+  await user.click(screen.getByRole('tab', { name: /Connection & Models/ }))
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as { use_gift_quota: boolean }
+  expect(payload.use_gift_quota).toBe(true)
+})
+
 test('quick options show only applicable shortcuts when the provider changes', async () => {
   const user = userEvent.setup()
   render(<ConfigurationHarness />)

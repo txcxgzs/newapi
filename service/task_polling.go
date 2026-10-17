@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -629,6 +630,20 @@ func finalizeTerminalTask(ctx context.Context, adaptor TaskPollingAdaptor, task 
 	if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
 		RefundTaskQuota(ctx, task, task.FailReason)
 	}
+	// 成功终态：按最终实扣额度（含差额结算调整）给服务渠道商家分润。
+	// 本函数只被终态 CAS 赢家调用一次，且成功任务不再退款，无需回冲。
+	if task.Status == model.TaskStatusSuccess && task.Quota > 0 {
+		RecordMerchantEarningForTask(ctx, task.ChannelId,
+			"task:"+strconv.FormatInt(task.ID, 10),
+			TaskModelName(task), task.Quota)
+	}
+}
+
+// FinalizeTerminalTaskOnFetch 客户端驱动的任务查询（Gemini/Vertex 实时拉取，
+// relay.tryRealtimeFetch）把任务推进到终态时，复用轮询路径的统一终态收尾：
+// 差额结算 / 失败兜底退款 / 商家分润。仅终态 CAS 赢家调用。
+func FinalizeTerminalTaskOnFetch(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
+	finalizeTerminalTask(ctx, adaptor, task, taskResult)
 }
 
 func redactVideoResponseBody(body []byte) []byte {

@@ -122,6 +122,7 @@ export function Home() {
 
   return (
     <PublicLayout showMainContainer={false}>
+      {/* 行情条已移入 Hero 区块顶部，与紫色渐变背景融为一体（见 sections/hero.tsx） */}
       <Hero isAuthenticated={isAuthenticated} />
       <Stats />
       <Features />

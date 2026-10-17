@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   CrownIcon,
+  GiftIcon,
   Wallet01Icon,
   Wrench01Icon,
 } from '@hugeicons/core-free-icons'
@@ -81,18 +82,24 @@ function ToolSurchargeMarker() {
 export function LogCostDisplay(props: LogCostDisplayProps) {
   const { t } = useTranslation()
   const isSubscription = props.other?.billing_source === 'subscription'
+  const isGift = props.other?.billing_source === 'gift'
   const showToolSurcharge = hasToolSurcharge(props.other)
   const quota = isSubscription
     ? (props.other?.subscription_consumed ?? props.quota)
     : props.quota
   let source: string | undefined
+  let sourceIcon = Wallet01Icon
 
-  // A log billed to a subscription always names its funding source: that
-  // subscription may have expired since, and the viewer may hold no active
-  // plan today. Only the wallet marker is contextual and follows
-  // showBillingSource.
+  // A log billed to a subscription or to gift quota always names its funding
+  // source: a subscription may have expired since, and gift quota is a
+  // separate balance the viewer must be able to distinguish from the wallet.
+  // Only the wallet marker is contextual and follows showBillingSource.
   if (isSubscription) {
     source = t('Subscription')
+    sourceIcon = CrownIcon
+  } else if (isGift) {
+    source = t('Gift')
+    sourceIcon = GiftIcon
   } else if (
     props.showBillingSource &&
     props.other?.billing_source === 'wallet'
@@ -121,7 +128,7 @@ export function LogCostDisplay(props: LogCostDisplayProps) {
                     tabIndex={0}
                   >
                     <HugeiconsIcon
-                      icon={isSubscription ? CrownIcon : Wallet01Icon}
+                      icon={sourceIcon}
                       className='size-3.5'
                       strokeWidth={2}
                       aria-hidden='true'

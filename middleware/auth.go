@@ -135,6 +135,14 @@ func UserAuth() func(c *gin.Context) {
 	}
 }
 
+// MerchantAuth 商家门户门禁：商家角色（2）及以上可访问，管理员天然可进。
+// 数据隔离由各 handler 以当前用户ID过滤，不在中间件层做。
+func MerchantAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		authHelper(c, common.RoleMerchant)
+	}
+}
+
 func AdminAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		authHelper(c, common.RoleAdminUser)

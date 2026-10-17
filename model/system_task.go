@@ -21,6 +21,11 @@ const (
 	SystemTaskTypeModelUpdate    = "model_update"
 	SystemTaskTypeMidjourneyPoll = "midjourney_poll"
 	SystemTaskTypeAsyncTaskPoll  = "async_task_poll"
+
+	// New API Pro：报价同步、智能路由、K线聚合
+	SystemTaskTypePriceSync       = "price_sync"
+	SystemTaskTypeRoutingOptimize = "routing_optimize"
+	SystemTaskTypeCandleAgg       = "candle_aggregate"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")

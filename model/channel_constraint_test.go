@@ -19,6 +19,7 @@ func TestFilterCandidateIDs(t *testing.T) {
 	ordinary := &Channel{Id: 900003, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}
 	kling := &Channel{Id: 900004, Type: constant.ChannelTypeKling, Status: common.ChannelStatusEnabled}
 	jimeng := &Channel{Id: 900005, Type: constant.ChannelTypeJimeng, Status: common.ChannelStatusEnabled}
+	gift := &Channel{Id: 900006, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, UseGiftQuota: common.GetPointer(true)}
 	matchingCustom := &Channel{Id: 900010, Type: constant.ChannelTypeAdvancedCustom, Status: common.ChannelStatusEnabled}
 	matchingCustom.SetOtherSettings(kitdto.ChannelOtherSettings{
 		AdvancedCustom: &kitdto.AdvancedCustomConfig{
@@ -40,6 +41,9 @@ func TestFilterCandidateIDs(t *testing.T) {
 
 	pathFilter := dto.ChannelFilter{Kind: dto.FilterRequestPath, RequestPath: "/v1/chat/completions"}
 	emptyPathFilter := dto.ChannelFilter{Kind: dto.FilterRequestPath, RequestPath: ""}
+	giftOnlyFilter := dto.ChannelFilter{Kind: dto.FilterGiftBilling, GiftBilling: common.GetPointer(true)}
+	walletOnlyFilter := dto.ChannelFilter{Kind: dto.FilterGiftBilling, GiftBilling: common.GetPointer(false)}
+	unsetGiftFilter := dto.ChannelFilter{Kind: dto.FilterGiftBilling}
 
 	tests := []struct {
 		name      string
@@ -130,6 +134,35 @@ func TestFilterCandidateIDs(t *testing.T) {
 			wantEmpty: dto.FilterRequestPath,
 		},
 		{
+			name:      "gift billing keeps only gift channels",
+			ids:       []int{900003, 900006},
+			modelName: "gpt-4",
+			filters:   []dto.ChannelFilter{giftOnlyFilter},
+			wantKept:  []int{900006},
+		},
+		{
+			name:      "wallet billing drops gift channels",
+			ids:       []int{900003, 900006},
+			modelName: "gpt-4",
+			filters:   []dto.ChannelFilter{walletOnlyFilter},
+			wantKept:  []int{900003},
+		},
+		{
+			name:      "gift billing empties when every candidate is unset",
+			ids:       []int{900003},
+			modelName: "gpt-4",
+			filters:   []dto.ChannelFilter{giftOnlyFilter},
+			wantKept:  []int{},
+			wantEmpty: dto.FilterGiftBilling,
+		},
+		{
+			name:      "unset gift billing filter keeps all cached candidates",
+			ids:       []int{900003, 900006},
+			modelName: "gpt-4",
+			filters:   []dto.ChannelFilter{unsetGiftFilter},
+			wantKept:  []int{900003, 900006},
+		},
+		{
 			name:      "intersection attributes empty set to identity after path keeps candidates",
 			ids:       []int{900001, 900010},
 			modelName: "gpt-4",
@@ -155,6 +188,7 @@ func TestFilterCandidateIDs(t *testing.T) {
 		900003: ordinary,
 		900004: kling,
 		900005: jimeng,
+		900006: gift,
 		900010: matchingCustom,
 		900011: otherCustom,
 	}
@@ -215,4 +249,33 @@ func TestChannelSatisfiesFilters(t *testing.T) {
 	}})
 	assert.False(t, ok)
 	assert.Equal(t, dto.FilterRequestPath, kind)
+
+	gift := &Channel{Id: 4, Type: constant.ChannelTypeOpenAI, UseGiftQuota: common.GetPointer(true)}
+
+	ok, kind = ChannelSatisfiesFilters(gift, "gpt-4", []dto.ChannelFilter{{
+		Kind:        dto.FilterGiftBilling,
+		GiftBilling: common.GetPointer(true),
+	}})
+	require.True(t, ok)
+	assert.Equal(t, dto.ChannelFilterKind(""), kind)
+
+	ok, kind = ChannelSatisfiesFilters(ordinary, "gpt-4", []dto.ChannelFilter{{
+		Kind:        dto.FilterGiftBilling,
+		GiftBilling: common.GetPointer(true),
+	}})
+	assert.False(t, ok)
+	assert.Equal(t, dto.FilterGiftBilling, kind)
+
+	ok, kind = ChannelSatisfiesFilters(gift, "gpt-4", []dto.ChannelFilter{{
+		Kind:        dto.FilterGiftBilling,
+		GiftBilling: common.GetPointer(false),
+	}})
+	assert.False(t, ok)
+	assert.Equal(t, dto.FilterGiftBilling, kind)
+
+	ok, kind = ChannelSatisfiesFilters(ordinary, "gpt-4", []dto.ChannelFilter{{
+		Kind: dto.FilterGiftBilling,
+	}})
+	require.True(t, ok)
+	assert.Equal(t, dto.ChannelFilterKind(""), kind)
 }

@@ -50,6 +50,10 @@ const CONFIGURATION_BLOCKS = {
     section: 'routing',
     fields: ['priority', 'weight', 'test_model', 'auto_ban'],
   },
+  giftQuota: {
+    section: 'routing',
+    fields: ['use_gift_quota'],
+  },
   overrideRules: {
     section: 'request',
     fields: ['status_code_mapping', 'param_override', 'header_override'],
@@ -145,6 +149,7 @@ export function getChannelConfigurationState(
       values.test_model?.trim() ||
       (values.auto_ban ?? 1) !== 1
     ),
+    giftQuota: values.use_gift_quota === true,
     overrideRules:
       hasConfiguredJson(values.status_code_mapping) ||
       hasConfiguredJson(values.param_override) ||

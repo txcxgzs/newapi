@@ -171,6 +171,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = billingErr
 			break
 		}
+		if relayInfo.Billing != nil {
+			service.EnsureGiftBillingFilter(c, relayInfo.BillingSource)
+		}
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
@@ -290,6 +293,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	if newAPIError != nil {
 		return nil, newAPIError
 	}
+	// 重试换渠道：把价格与 tiered 预估重估到实际命中的渠道，
+	// 客户扣费与该渠道商家的分润都按其挂牌倍率结算（预扣差额由结算多退少补）。
+	helper.ApplyChannelRate(info, channel.Id)
 	return channel, nil
 }
 
@@ -545,6 +551,9 @@ func executeTaskSubmissionWith(
 
 		stage = "submit"
 		result, taskErr = submit(c, relayInfo)
+		if relayInfo.Billing != nil {
+			service.EnsureGiftBillingFilter(c, relayInfo.BillingSource)
+		}
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("after_submit", retryParam.GetRetry()+1)
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
@@ -695,6 +704,13 @@ func executeTaskSubmissionWith(
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to settle task billing"), "task_billing_settlement_failed", http.StatusInternalServerError)
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
+	}
+	// 提交即终态 SUCCESS（JS 插件 immediate 结果、同步图像协议）：任务以终态落库，
+	// 不会被未完成任务轮询再次覆盖，必须在此处按最终实扣额度分润；
+	// 幂等键与轮询路径相同（task:<id>），重复触发天然去重。
+	if task.Status == model.TaskStatusSuccess && task.Quota > 0 {
+		service.RecordMerchantEarningForTask(c, task.ChannelId,
+			fmt.Sprintf("task:%d", task.ID), service.TaskModelName(task), task.Quota)
 	}
 	if task.Status != model.TaskStatusFailure {
 		service.MarkRequestPolicySuccess(c, nil)

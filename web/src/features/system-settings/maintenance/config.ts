@@ -26,6 +26,7 @@ export type HeaderNavModulesConfig = {
   console: boolean
   pricing: HeaderNavAccessConfig
   rankings: HeaderNavAccessConfig
+  market: HeaderNavAccessConfig
   docs: boolean
   about: boolean
   [key: string]: boolean | HeaderNavAccessConfig
@@ -46,6 +47,10 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
     requireAuth: false,
   },
   rankings: {
+    enabled: true,
+    requireAuth: false,
+  },
+  market: {
     enabled: true,
     requireAuth: false,
   },
@@ -100,6 +105,7 @@ const cloneHeaderNavDefault = (): HeaderNavModulesConfig => ({
   ...HEADER_NAV_DEFAULT,
   pricing: { ...HEADER_NAV_DEFAULT.pricing },
   rankings: { ...HEADER_NAV_DEFAULT.rankings },
+  market: { ...HEADER_NAV_DEFAULT.market },
 })
 
 const parseAccessModule = (
@@ -148,6 +154,7 @@ export function parseHeaderNavModules(
       ...base,
       pricing: { ...base.pricing },
       rankings: { ...base.rankings },
+      market: { ...base.market },
     }
 
     Object.entries(parsed).forEach(([key, raw]) => {
@@ -157,6 +164,10 @@ export function parseHeaderNavModules(
       }
       if (key === 'rankings') {
         result.rankings = parseAccessModule(raw, base.rankings)
+        return
+      }
+      if (key === 'market') {
+        result.market = parseAccessModule(raw, base.market)
         return
       }
 

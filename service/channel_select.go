@@ -41,6 +41,25 @@ func AppendTaskPluginIdentityFilter(c *gin.Context, pluginKey string) {
 	})
 }
 
+// EnsureGiftBillingFilter 登记赠金计费隔离过滤（幂等）：赠金计费会话只允许重试到赠金
+// 渠道，钱包/订阅计费会话只允许重试到非赠金渠道，防止重试跨计费来源切换渠道导致扣错账。
+// 应在计费会话建立后调用；未建立会话（免费模型等）时不登记，后续会话建立后再调用生效。
+func EnsureGiftBillingFilter(c *gin.Context, billingSource string) {
+	if c == nil {
+		return
+	}
+	constraints := GetChannelConstraints(c)
+	for _, filter := range constraints.Filters {
+		if filter.Kind == dto.FilterGiftBilling {
+			return
+		}
+	}
+	constraints.AddFilter(dto.ChannelFilter{
+		Kind:        dto.FilterGiftBilling,
+		GiftBilling: common.GetPointer(billingSource == BillingSourceGift),
+	})
+}
+
 type RetryParam struct {
 	Ctx          *gin.Context
 	TokenGroup   string

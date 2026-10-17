@@ -21,7 +21,11 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { resolveSidebarView } from '@/components/layout/lib/sidebar-view-registry'
-import type { NavGroup, ResolvedSidebarView } from '@/components/layout/types'
+import type {
+  NavGroup,
+  NavItem,
+  ResolvedSidebarView,
+} from '@/components/layout/types'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -30,6 +34,23 @@ import { useSidebarData } from './use-sidebar-data'
 
 /** Sentinel key used for the root navigation in animation `key=` props */
 const ROOT_VIEW_KEY = '__root'
+
+/**
+ * Role-based visibility of a single sidebar item.
+ *
+ * `requiredRole` sets a lower bound, `maxRole` an upper bound. Items that set
+ * neither stay visible for every role, so existing entries keep their
+ * behaviour. Route-level guards still enforce access independently.
+ */
+export function isNavItemVisibleForRole(item: NavItem, role: number): boolean {
+  if (item.requiredRole !== undefined && role < item.requiredRole) {
+    return false
+  }
+  if (item.maxRole !== undefined && role > item.maxRole) {
+    return false
+  }
+  return true
+}
 
 /**
  * Resolve the active sidebar view for the current location.
@@ -57,8 +78,8 @@ export function useSidebarView(): ResolvedSidebarView {
     return configFilteredRoot
       .filter((group) => (group.id === 'admin' ? isAdmin : true))
       .map((group) => {
-        const items = group.items.filter(
-          (item) => item.requiredRole === undefined || role >= item.requiredRole
+        const items = group.items.filter((item) =>
+          isNavItemVisibleForRole(item, role)
         )
         return items.length === group.items.length ? group : { ...group, items }
       })

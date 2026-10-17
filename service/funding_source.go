@@ -8,12 +8,12 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// FundingSource — 资金来源接口（钱包 or 订阅）
+// FundingSource — 资金来源接口（钱包 / 订阅 / 赠金）
 // ---------------------------------------------------------------------------
 
 // FundingSource 抽象了预扣费的资金来源。
 type FundingSource interface {
-	// Source 返回资金来源标识："wallet" 或 "subscription"
+	// Source 返回资金来源标识："wallet"、"subscription" 或 "gift"
 	Source() string
 	// PreConsume 从该资金来源预扣 amount 额度
 	PreConsume(amount int) error
@@ -71,6 +71,55 @@ func (w *WalletFunding) Refund() error {
 	// IncreaseUserQuota 是 quota += N 的非幂等操作，不能重试，否则会多退额度。
 	// 订阅的 RefundSubscriptionPreConsume 有 requestId 幂等保护所以可以重试。
 	return model.IncreaseUserQuota(w.userId, w.consumed, false)
+}
+
+// ---------------------------------------------------------------------------
+// GiftFunding — 赠金资金来源实现
+// ---------------------------------------------------------------------------
+
+// ErrInsufficientGiftQuota 赠金原子预扣失败（赠金不足），未发生任何扣减。
+// BillingSession 据此映射为 ErrorCodeInsufficientUserQuota；
+// 赠金渠道不做回退，直接以“赠金不足”拒绝请求。
+var ErrInsufficientGiftQuota = errors.New("gift quota insufficient")
+
+type GiftFunding struct {
+	userId   int
+	consumed int // 实际预扣的赠金额度
+}
+
+func (g *GiftFunding) Source() string { return BillingSourceGift }
+
+func (g *GiftFunding) PreConsume(amount int) error {
+	if amount <= 0 {
+		return nil
+	}
+	reserved, err := model.TryReserveGiftQuota(g.userId, amount)
+	if err != nil {
+		return err
+	}
+	if !reserved {
+		return ErrInsufficientGiftQuota
+	}
+	g.consumed += amount
+	return nil
+}
+
+func (g *GiftFunding) Settle(delta int) error {
+	if delta == 0 {
+		return nil
+	}
+	if delta > 0 {
+		return model.DecreaseGiftQuota(g.userId, delta)
+	}
+	return model.IncreaseGiftQuota(g.userId, -delta)
+}
+
+func (g *GiftFunding) Refund() error {
+	if g.consumed <= 0 {
+		return nil
+	}
+	// IncreaseGiftQuota 是 gift_quota += N 的非幂等操作，不能重试，否则会多退赠金。
+	return model.IncreaseGiftQuota(g.userId, g.consumed)
 }
 
 // ---------------------------------------------------------------------------

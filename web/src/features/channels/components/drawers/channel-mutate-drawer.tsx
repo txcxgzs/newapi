@@ -32,6 +32,7 @@ import {
   Trash2,
   Copy,
   FileText,
+  Gift,
   Eraser,
   Eye,
   RefreshCw,
@@ -2253,6 +2254,46 @@ export function ChannelMutateDrawer({
               <Switch
                 checked={field.value === 1}
                 onCheckedChange={(checked) => field.onChange(checked ? 1 : 0)}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+    </div>
+  )
+
+  const giftQuotaFields = (
+    <div
+      role='group'
+      aria-label={t('Gift Quota Billing')}
+      className={channelConfigurationBlockClassName(
+        configuration.blocks.giftQuota,
+        'flex flex-col gap-4'
+      )}
+    >
+      <SubHeading
+        title={t('Gift Quota Billing')}
+        status={configuration.blocks.giftQuota}
+        icon={<Gift className='h-3.5 w-3.5' />}
+        iconTone='warning'
+      />
+      <FormField
+        control={form.control}
+        name='use_gift_quota'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between'>
+            <div className='space-y-0.5'>
+              <FormLabel>{t('Use Gift Quota')}</FormLabel>
+              <FormDescription>
+                {t(
+                  "Deduct the user's gift quota for this channel. Wallet balance and subscriptions are not used, and requests fail when the gift quota is insufficient."
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value === true}
+                onCheckedChange={field.onChange}
               />
             </FormControl>
           </FormItem>
@@ -4629,6 +4670,7 @@ export function ChannelMutateDrawer({
           <>
             {redirectPanelActive ? redirectPanelNotice : modelMappingFields}
             {routingFields}
+            {giftQuotaFields}
           </>
         }
         request={

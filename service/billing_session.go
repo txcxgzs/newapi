@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -145,6 +146,10 @@ func (s *BillingSession) needsRefundLocked() bool {
 	if sub, ok := s.funding.(*SubscriptionFunding); ok && sub.preConsumed > 0 {
 		return true
 	}
+	// 赠金同样可能在 tokenConsumed=0 时已预扣（如令牌不受限场景）
+	if gift, ok := s.funding.(*GiftFunding); ok && gift.consumed > 0 {
+		return true
+	}
 	return false
 }
 
@@ -236,6 +241,16 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
+		if errors.Is(err, ErrInsufficientGiftQuota) {
+			giftQuota, quotaErr := model.GetUserGiftQuota(s.relayInfo.UserId)
+			if quotaErr != nil {
+				giftQuota = 0
+			}
+			return types.NewErrorWithStatusCode(
+				fmt.Errorf("赠金渠道仅支持赠金扣费, 用户赠金不足, 剩余赠金: %s", logger.FormatQuota(giftQuota)),
+				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
 			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %s", errMsg), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
@@ -285,6 +300,25 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 			)
 		}
 		return nil
+	case *GiftFunding:
+		if requireAvailableQuota {
+			// 与钱包一致：图片数量在提交前已知（含重试和覆盖），
+			// 按原子预扣处理，不允许赠金欠费。
+			if err := funding.PreConsume(delta); err != nil {
+				if errors.Is(err, ErrInsufficientGiftQuota) {
+					return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+				}
+				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+			}
+			return nil
+		}
+		// 与结算补扣语义一致：全额无条件扣减，余额不足的部分记为欠费（赠金可为负），
+		// 保证日志记录的预扣额度与赠金余额的实际变动始终对账一致。
+		if err := model.DecreaseGiftQuota(funding.userId, delta); err != nil {
+			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
+		funding.consumed += delta
+		return nil
 	default:
 		return types.NewError(fmt.Errorf("unsupported funding source: %s", s.funding.Source()), types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
@@ -301,6 +335,12 @@ func (s *BillingSession) rollbackFundingReserve(delta int) {
 	case *SubscriptionFunding:
 		if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, -int64(delta)); err != nil {
 			common.SysLog("error rolling back subscription funding reserve: " + err.Error())
+		}
+	case *GiftFunding:
+		if err := model.IncreaseGiftQuota(funding.userId, delta); err != nil {
+			common.SysLog("error rolling back gift funding reserve: " + err.Error())
+		} else {
+			funding.consumed -= delta
 		}
 	}
 }
@@ -340,6 +380,10 @@ func (s *BillingSession) shouldTrust(c *gin.Context) bool {
 	switch s.funding.Source() {
 	case BillingSourceWallet:
 		return float64(s.relayInfo.UserQuota) > trustQuota
+	case BillingSourceGift:
+		// 赠金渠道禁用信任额度旁路：赠金额度与充值余额是两本账，
+		// 信任判定基于钱包余额，不能用来放行赠金扣费，必须实时校验并预扣赠金。
+		return false
 	case BillingSourceSubscription:
 		// 订阅不能启用信任旁路。原因：
 		// 1. PreConsumeUserSubscription 要求 amount>0 来创建预扣记录并锁定订阅
@@ -433,6 +477,45 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			return nil, apiErr
 		}
 		return session, nil
+	}
+
+	tryGift := func() (*BillingSession, *types.NewAPIError) {
+		giftQuota, err := model.GetUserGiftQuota(relayInfo.UserId)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+		}
+		if giftQuota <= 0 {
+			return nil, types.NewErrorWithStatusCode(
+				fmt.Errorf("赠金渠道仅支持赠金扣费, 用户赠金不足, 剩余赠金: %s", logger.FormatQuota(giftQuota)),
+				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
+		if giftQuota-preConsumedQuota < 0 {
+			return nil, types.NewErrorWithStatusCode(
+				fmt.Errorf("预扣费额度失败, 用户剩余赠金: %s, 需要预扣费额度: %s", logger.FormatQuota(giftQuota), logger.FormatQuota(preConsumedQuota)),
+				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
+
+		session := &BillingSession{
+			relayInfo: relayInfo,
+			funding:   &GiftFunding{userId: relayInfo.UserId},
+		}
+		if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
+			return nil, apiErr
+		}
+		return session, nil
+	}
+
+	// 赠金渠道强制使用赠金资金来源：不参与用户计费偏好，且赠金不足时不回退余额/订阅。
+	// 预扣发生在 InitChannelMeta 之前，渠道来自上下文键（distributor / SetupContextForSelectedChannel 写入）。
+	// 渠道查找失败按非赠金处理：此时请求会在后续渠道校验阶段失败，不会发生实际扣费。
+	if c != nil {
+		if channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId); channelID > 0 {
+			if channel, err := model.CacheGetChannel(channelID); err == nil && channel != nil && channel.GetUseGiftQuota() {
+				return tryGift()
+			}
+		}
 	}
 
 	switch pref {

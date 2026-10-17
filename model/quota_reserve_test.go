@@ -48,6 +48,13 @@ func getUserQuotaFromDB(t *testing.T, id int) int {
 	return user.Quota
 }
 
+func getUserGiftQuotaFromDB(t *testing.T, id int) int {
+	t.Helper()
+	var user User
+	require.NoError(t, DB.Select("gift_quota").First(&user, id).Error)
+	return user.GiftQuota
+}
+
 func getTokenFromDB(t *testing.T, id int) Token {
 	t.Helper()
 	var token Token
@@ -258,4 +265,95 @@ func TestTokenCacheInitPreservesLiveQuotaAndFenceBlocksStaleSnapshot(t *testing.
 	cached, err = cacheGetTokenByKey(token.Key)
 	require.NoError(t, err)
 	assert.Equal(t, 100, cached.RemainQuota)
+}
+
+func setGiftQuota(t *testing.T, id int, quota int) {
+	t.Helper()
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", id).Update("gift_quota", quota).Error)
+}
+
+func TestGiftQuotaReserveIsConditionalAndNeverOverdraws(t *testing.T) {
+	truncateTables(t)
+
+	user := createReserveTestUser(t, 0)
+	setGiftQuota(t, user.Id, 100)
+
+	reserved, err := TryReserveGiftQuota(user.Id, 60)
+	require.NoError(t, err)
+	assert.True(t, reserved)
+	assert.Equal(t, 40, getUserGiftQuotaFromDB(t, user.Id))
+
+	reserved, err = TryReserveGiftQuota(user.Id, 41)
+	require.NoError(t, err)
+	assert.False(t, reserved)
+	assert.Equal(t, 40, getUserGiftQuotaFromDB(t, user.Id))
+
+	reserved, err = TryReserveGiftQuota(user.Id, 0)
+	require.NoError(t, err)
+	assert.True(t, reserved)
+	assert.Equal(t, 40, getUserGiftQuotaFromDB(t, user.Id))
+
+	_, err = TryReserveGiftQuota(user.Id, -1)
+	require.Error(t, err)
+	assert.Equal(t, 40, getUserGiftQuotaFromDB(t, user.Id))
+}
+
+func TestGiftQuotaSettlementMayOverdrawAndCreditIsBounded(t *testing.T) {
+	truncateTables(t)
+
+	user := createReserveTestUser(t, 0)
+
+	require.NoError(t, IncreaseGiftQuota(user.Id, 50))
+	assert.Equal(t, 50, getUserGiftQuotaFromDB(t, user.Id))
+
+	require.NoError(t, DecreaseGiftQuota(user.Id, 200))
+	assert.Equal(t, -150, getUserGiftQuotaFromDB(t, user.Id), "settlement may overdraw the gift ledger")
+
+	setGiftQuota(t, user.Id, common.MaxWalletQuota)
+	err := IncreaseGiftQuota(user.Id, 1)
+	assert.ErrorIs(t, err, ErrWalletQuotaLimitExceeded)
+	assert.Equal(t, common.MaxWalletQuota, getUserGiftQuotaFromDB(t, user.Id))
+
+	err = IncreaseGiftQuota(user.Id+987654, 1)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestAdjustUserGiftQuotaModesKeepWalletUntouchedAndEnforcePermission(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mode      string
+		role      int
+		value     int
+		wantQuota int
+		wantErr   error
+	}{
+		{"add", "add", common.RoleRootUser, 500, 1500, nil},
+		{"subtract", "subtract", common.RoleRootUser, 500, 500, nil},
+		{"override", "override", common.RoleRootUser, 500, 500, nil},
+		{"override negative", "override", common.RoleRootUser, -1, -1, nil},
+		{"add zero rejected", "add", common.RoleRootUser, 0, 1000, ErrInvalidUserQuotaAdjustment},
+		{"invalid mode rejected", "invalid", common.RoleRootUser, 500, 1000, ErrInvalidUserQuotaAdjustment},
+		{"peer role rejected", "add", common.RoleCommonUser, 500, 1000, ErrUserQuotaPermission},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncateTables(t)
+
+			user := createReserveTestUser(t, 3000)
+			setGiftQuota(t, user.Id, 1000)
+
+			adjustment, err := AdjustUserGiftQuota(user.Id, tc.role, tc.mode, tc.value)
+			if tc.wantErr != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+				assert.Nil(t, adjustment)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, adjustment)
+				assert.Equal(t, user.Id, adjustment.UserID)
+				assert.Equal(t, 1000, adjustment.Before)
+				assert.Equal(t, tc.wantQuota, adjustment.After)
+			}
+			assert.Equal(t, tc.wantQuota, getUserGiftQuotaFromDB(t, user.Id))
+			assert.Equal(t, 3000, getUserQuotaFromDB(t, user.Id), "gift adjustments must not touch the wallet")
+		})
+	}
 }

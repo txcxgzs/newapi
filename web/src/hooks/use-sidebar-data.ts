@@ -32,6 +32,7 @@ import {
   ServerCog,
   Settings,
   ShieldCheck,
+  Store,
   Ticket,
   User,
   Users,
@@ -117,6 +118,18 @@ export function useSidebarData(): SidebarData {
             icon: Wallet,
           },
           {
+            title: t('Merchant Portal'),
+            url: '/merchant',
+            icon: Store,
+            requiredRole: ROLE.MERCHANT,
+          },
+          {
+            title: t('Merchant Application'),
+            url: '/merchant/apply',
+            icon: Store,
+            maxRole: ROLE.MERCHANT - 1,
+          },
+          {
             title: t('Profile'),
             url: '/profile',
             icon: User,
@@ -146,6 +159,12 @@ export function useSidebarData(): SidebarData {
             title: t('Users'),
             url: '/users',
             icon: Users,
+          },
+          {
+            title: t('Merchants'),
+            url: '/merchant-admin',
+            icon: Store,
+            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('Redemption Codes'),

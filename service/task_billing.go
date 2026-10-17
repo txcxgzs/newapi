@@ -112,10 +112,16 @@ func taskIsSubscription(task *model.Task) bool {
 	return task.PrivateData.BillingSource == BillingSourceSubscription && task.PrivateData.SubscriptionId > 0
 }
 
-// taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
+// taskAdjustFunding 调整任务的资金来源（钱包、订阅或赠金），delta > 0 表示扣费，delta < 0 表示退还。
 func taskAdjustFunding(task *model.Task, delta int) error {
 	if taskIsSubscription(task) {
 		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+	}
+	if task.PrivateData.BillingSource == BillingSourceGift {
+		if delta > 0 {
+			return model.DecreaseGiftQuota(task.UserId, delta)
+		}
+		return model.IncreaseGiftQuota(task.UserId, -delta)
 	}
 	if delta > 0 {
 		return model.DecreaseUserQuota(task.UserId, delta, false)
@@ -247,8 +253,8 @@ func taskBillingContextPriceData(bc *model.TaskBillingContext) *types.PriceData 
 	return priceData
 }
 
-// taskModelName 从 BillingContext 或 Properties 中获取模型名称。
-func taskModelName(task *model.Task) string {
+// TaskModelName 从 BillingContext 或 Properties 中获取模型名称。
+func TaskModelName(task *model.Task) string {
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.OriginModelName != "" {
 		return bc.OriginModelName
 	}
@@ -286,7 +292,7 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 		LogType:   model.LogTypeRefund,
 		Content:   "",
 		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
+		ModelName: TaskModelName(task),
 		Quota:     quota,
 		TokenId:   task.PrivateData.TokenId,
 		Group:     task.Group,
@@ -366,7 +372,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		LogType:   logType,
 		Content:   reason,
 		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
+		ModelName: TaskModelName(task),
 		Quota:     logQuota,
 		TokenId:   task.PrivateData.TokenId,
 		Group:     task.Group,
@@ -383,7 +389,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		return false
 	}
 
-	modelName := taskModelName(task)
+	modelName := TaskModelName(task)
 
 	// 获取模型价格和倍率
 	modelRatio, hasRatioSetting, _ := ratio_setting.GetModelRatio(modelName)
@@ -391,6 +397,8 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	if !hasRatioSetting || modelRatio <= 0 {
 		return false
 	}
+	// 渠道费率乘数：与任务预扣口径一致地参与重算
+	modelRatio *= model.GetChannelRateMultiplierById(task.ChannelId)
 
 	// 获取用户和组的倍率信息
 	group := task.Group

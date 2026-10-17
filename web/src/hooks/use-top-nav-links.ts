@@ -39,6 +39,7 @@ export type TopNavLink = {
  *   console: true,
  *   pricing: { enabled: true, requireAuth: false },
  *   rankings: { enabled: true, requireAuth: false },
+ *   market: { enabled: true, requireAuth: false },
  *   docs: true,
  *   about: true
  * }
@@ -84,6 +85,13 @@ export function useTopNavLinks(): TopNavLink[] {
   if (rankings && typeof rankings === 'object' && rankings.enabled) {
     const requiresAuth = rankings.requireAuth && !isAuthed
     links.push({ title: t('Rankings'), href: '/rankings', requiresAuth })
+  }
+
+  // Market
+  const market = modules?.market
+  if (market && typeof market === 'object' && market.enabled) {
+    const requiresAuth = market.requireAuth && !isAuthed
+    links.push({ title: t('API Market'), href: '/market', requiresAuth })
   }
 
   // Docs (supports external links)

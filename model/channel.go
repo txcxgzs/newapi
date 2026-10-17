@@ -55,6 +55,20 @@ type Channel struct {
 
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
+	// New API Pro：商家归属与智能路由
+	MerchantId  int   `json:"merchant_id" gorm:"default:0;index"` // 归属商家用户ID，0=平台自营
+	AutoRouting *bool `json:"auto_routing" gorm:"default:false"`  // 纳入智能路由：按质量分层+比价自动调 priority/weight
+	PriceSync   *bool `json:"price_sync" gorm:"default:false"`    // 自动同步该渠道上游的挂牌报价到盘口
+
+	// RateMultiplier 渠道倍率：商家上传该渠道时填写的唯一价格参数。
+	// 语义为"相对平台标准价的折扣/溢价系数"（对标 Sub2API 的 rate_multiplier），
+	// 例如 0.1 表示一折。商家不填具体价格，盘口价由 平台标准倍率 × 本倍率 派生。
+	RateMultiplier float64 `json:"rate_multiplier" gorm:"default:1"`
+
+	// UseGiftQuota 赠金渠道：命中该渠道的请求只能从用户赠金扣费，
+	// 赠金不足直接拒绝，不回退充值余额；未勾选的渠道不使用赠金。
+	UseGiftQuota *bool `json:"use_gift_quota" gorm:"default:false"`
+
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
 }
@@ -520,6 +534,75 @@ func (channel *Channel) GetWeight() int {
 	return int(*channel.Weight)
 }
 
+func (channel *Channel) GetAutoRouting() bool {
+	if channel.AutoRouting == nil {
+		return false
+	}
+	return *channel.AutoRouting
+}
+
+func (channel *Channel) GetPriceSync() bool {
+	if channel.PriceSync == nil {
+		return false
+	}
+	return *channel.PriceSync
+}
+
+func (channel *Channel) GetMerchantId() int {
+	return channel.MerchantId
+}
+
+// GetUseGiftQuota 读取赠金渠道标记。历史数据或未勾选时按 false 处理。
+func (channel *Channel) GetUseGiftQuota() bool {
+	if channel.UseGiftQuota == nil {
+		return false
+	}
+	return *channel.UseGiftQuota
+}
+
+// GetRateMultiplier 读取渠道倍率。历史数据或未填写时按 1.0（原价）处理，
+// 保证"平台标准倍率 × 渠道倍率"的派生盘口不会因 0 值而清零。
+func (channel *Channel) GetRateMultiplier() float64 {
+	if channel.RateMultiplier <= 0 {
+		return 1.0
+	}
+	return channel.RateMultiplier
+}
+
+// GetChannelRateMultiplierById 返回指定渠道的费率乘数。计费路径用它把渠道倍率
+// 乘进客户价格；渠道不存在、DB 未初始化或读取失败时按 1.0 处理，退化为平台
+// 标准价，与 GetRateMultiplier 的兜底语义保持一致。
+func GetChannelRateMultiplierById(channelId int) float64 {
+	if channelId <= 0 || DB == nil {
+		return 1.0
+	}
+	channel, err := CacheGetChannel(channelId)
+	if err != nil || channel == nil {
+		return 1.0
+	}
+	return channel.GetRateMultiplier()
+}
+
+// DisableMerchantChannelsInTx 在事务内把商家名下所有启用中的渠道置为手动停用，
+// 并同步 abilities 的 enabled 冗余列。用于商家停用/降级联动：只停分润不停渠道，
+// 渠道会继续承接付费流量而分润已断。返回停用的渠道数；恢复上线由管理员手动
+// 启用，避免把此前被单独停用的渠道一并复活。
+func DisableMerchantChannelsInTx(tx *gorm.DB, merchantUserId int) (int64, error) {
+	res := tx.Model(&Channel{}).
+		Where("merchant_id = ? AND status = ?", merchantUserId, common.ChannelStatusEnabled).
+		Update("status", common.ChannelStatusManuallyDisabled)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return 0, nil
+	}
+	err := tx.Model(&Ability{}).
+		Where("channel_id IN (?)", tx.Model(&Channel{}).Select("id").Where("merchant_id = ?", merchantUserId)).
+		Update("enabled", false).Error
+	return res.RowsAffected, err
+}
+
 func (channel *Channel) GetBaseURL() string {
 	if channel.BaseURL == nil {
 		return ""
@@ -553,6 +636,15 @@ func (channel *Channel) Insert() error {
 	}
 	err = channel.AddAbilities(nil)
 	return err
+}
+
+// InsertWithTx 在调用方事务内创建渠道并写入 abilities，供需要跨表原子性的
+// 流程（如商家入驻审核）使用。
+func (channel *Channel) InsertWithTx(tx *gorm.DB) error {
+	if err := tx.Create(channel).Error; err != nil {
+		return err
+	}
+	return channel.AddAbilities(tx)
 }
 
 func (channel *Channel) Update() error {
@@ -601,6 +693,13 @@ func (channel *Channel) Update() error {
 	}
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
 	err = channel.UpdateAbilities(nil)
+	// 商家渠道的分组/模型/倍率变更后，派生盘口需要同步重算，
+	// 否则行情与智能路由会比对一个已经过期的盘口。
+	if err == nil && channel.MerchantId > 0 {
+		if rebuildErr := RebuildChannelQuotes(channel.Id); rebuildErr != nil {
+			common.SysLog(fmt.Sprintf("rebuild channel quotes failed: channel_id=%d, error=%v", channel.Id, rebuildErr))
+		}
+	}
 	return err
 }
 

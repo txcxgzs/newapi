@@ -158,8 +158,9 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			}
 
 			useTime := (time.Now().UnixNano() / int64(time.Millisecond)) - task.SubmitTime
-			// 如果时间超过一小时，且进度不是100%，则认为任务失败
-			if useTime > 3600000 && task.Progress != "100%" {
+			// 如果时间超过一小时，且进度不是100%，则认为任务失败。
+			// 已终态成功的任务不参与判死：分润已按其入账，回翻会退款且无法追回。
+			if useTime > 3600000 && task.Progress != "100%" && task.Status != "SUCCESS" {
 				responseItem.FailReason = "上游任务超时（超过1小时）"
 				responseItem.Status = "FAILURE"
 			}
@@ -177,6 +178,11 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			task.ImageUrl = responseItem.ImageUrl
 			task.Status = responseItem.Status
 			task.FailReason = responseItem.FailReason
+			// 成功即完成：把进度归一到 100%，任务随后离开未完成轮询集合，
+			// 不再被超时判死规则命中（否则已分润的任务会被回翻退款）。
+			if task.Status == "SUCCESS" {
+				task.Progress = "100%"
+			}
 			if responseItem.Properties != nil {
 				propertiesStr, _ := common.Marshal(responseItem.Properties)
 				task.Properties = string(propertiesStr)
@@ -214,6 +220,13 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 				logger.LogError(ctx, "UpdateMidjourneyTask task error: "+err.Error())
 			} else if won && shouldReturnQuota {
 				service.RefundMidjourneyQuota(ctx, task, "构图失败")
+			} else if won && task.Status == "SUCCESS" {
+				// 成功终态：按商家分成比例给计费渠道入账（失败任务已走上方退款分支，
+				// 成功不再退款故无需回冲；幂等键防轮询重复入账）。
+				// 终态判定只看 Status：上游可能报 SUCCESS 但进度串不是 100%。
+				service.RecordMerchantEarningForTask(ctx, task.GetBillingChannelId(),
+					fmt.Sprintf("mj:%d", task.Id),
+					service.CovertMjpActionToModelName(task.Action), task.Quota)
 			}
 		}
 	}

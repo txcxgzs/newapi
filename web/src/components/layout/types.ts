@@ -16,8 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type LinkProps } from '@tanstack/react-router'
-import { type TFunction } from 'i18next'
+import type { LinkProps } from '@tanstack/react-router'
+import type { TFunction } from 'i18next'
 
 /**
  * Base navigation item type
@@ -34,6 +34,13 @@ type BaseNavItem = {
    * `useSidebarView`). Route-level guards still enforce access independently.
    */
   requiredRole?: number
+  /**
+   * Maximum role allowed to see this item in the sidebar. When set, the item
+   * is hidden for users whose role is above this threshold (see
+   * `useSidebarView`), e.g. an entry point that only applies before the user
+   * has been granted a role. Items without it are unaffected.
+   */
+  maxRole?: number
 }
 
 /**

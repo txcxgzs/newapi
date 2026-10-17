@@ -173,6 +173,30 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/ratio_sync/channels":              accessTokenScopeRule("option:read"),
 	"POST /api/ratio_sync/fetch":                accessTokenScopeRule("option:write"),
 
+	// router/api-router.go: /api/channel_quotes, /api/market, /api/merchant
+	// 行情为公开数据，商家自助接口由处理器按角色与归属过滤，故用 any 规则。
+	"GET /api/channel_quotes/":                          accessTokenScopeRule("channel:read"),
+	"PUT /api/channel_quotes/":                          accessTokenScopeRule("channel:write"),
+	"DELETE /api/channel_quotes/:id":                    accessTokenScopeRule("channel:write"),
+	"POST /api/channel_quotes/sync":                     accessTokenScopeRule("channel:write"),
+	"GET /api/market/overview":                          accessTokenAnyRule,
+	"GET /api/market/kline":                             accessTokenAnyRule,
+	"POST /api/merchant/apply":                          accessTokenAnyRule,
+	"GET /api/merchant/application":                     accessTokenAnyRule,
+	"GET /api/merchant/portal/summary":                  accessTokenAnyRule,
+	"GET /api/merchant/portal/earnings":                 accessTokenAnyRule,
+	"GET /api/merchant/portal/quotes":                   accessTokenAnyRule,
+	"PUT /api/merchant/portal/quote":                    accessTokenAnyRule,
+	"GET /api/merchant/portal/withdrawals":              accessTokenAnyRule,
+	"POST /api/merchant/portal/withdrawals":             accessTokenAnyRule,
+	"GET /api/merchant_manage/applications":             accessTokenScopeRule("user:read"),
+	"POST /api/merchant_manage/applications/:id/review": accessTokenScopeRule("user:write"),
+	"POST /api/merchant_manage/applications/:id/probe":  accessTokenScopeRule("user:read"),
+	"GET /api/merchant_manage/list":                     accessTokenScopeRule("user:read"),
+	"PUT /api/merchant_manage/:id":                      accessTokenScopeRule("user:write"),
+	"GET /api/merchant_manage/withdrawals":              accessTokenScopeRule("billing:read"),
+	"POST /api/merchant_manage/withdrawals/:id/review":  accessTokenScopeRule("billing:write"),
+
 	// router/api-router.go: /api/performance, /api/system-task, /api/system-info
 	"GET /api/performance/stats":                   accessTokenScopeRule("ops:read"),
 	"DELETE /api/performance/disk_cache":           accessTokenScopeRule("ops:write"),

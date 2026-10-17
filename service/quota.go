@@ -88,7 +88,11 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	if relayInfo.UsePrice {
 		return nil
 	}
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	// 赠金渠道校验赠金余额，其他渠道校验钱包余额
+	availableQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	if relayInfo.BillingSource == BillingSourceGift {
+		availableQuota, err = model.GetUserGiftQuota(relayInfo.UserId)
+	}
 	if err != nil {
 		return err
 	}
@@ -105,6 +109,8 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
 	groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	modelRatio, _, _ := ratio_setting.GetModelRatio(modelName)
+	// 渠道费率乘数：WSS 会话中途预扣与初始 PriceData 口径保持一致
+	modelRatio *= model.GetChannelRateMultiplierById(relayInfo.GetChannelID())
 
 	autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
 	if exists {
@@ -137,8 +143,11 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
 
-	if userQuota < quota {
-		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
+	if availableQuota < quota {
+		if relayInfo.BillingSource == BillingSourceGift {
+			return fmt.Errorf("gift quota is not enough, gift quota: %s, need quota: %s", logger.FormatQuota(availableQuota), logger.FormatQuota(quota))
+		}
+		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(availableQuota), logger.FormatQuota(quota))
 	}
 
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
@@ -240,7 +249,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
-	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
+	logId := model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.InputTokens,
 		CompletionTokens: usage.OutputTokens,
@@ -254,6 +263,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
+	// New API Pro：商家渠道分润入账。
+	// WSS 多轮结算共享同一 request_id，不能做请求级幂等兜底；正常路径有 log_id 幂等。
+	RecordMerchantEarningForConsume(ctx, relayInfo.ChannelId, logId, logModel, quota, "")
 }
 
 func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData) int {
@@ -373,7 +385,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
-	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
+	logId := model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
@@ -387,6 +399,9 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
+	// New API Pro：商家渠道分润入账
+	// 音频为单次结算路径，消费日志未落库时可用请求级兜底键幂等。
+	RecordMerchantEarningForConsume(ctx, relayInfo.ChannelId, logId, logModel, quota, requestDedupFallback(ctx))
 	relayInfo.PerformanceOutputTokens = int64(usage.CompletionTokens)
 }
 
@@ -424,7 +439,7 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 
 func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (result postConsumeQuotaResult, err error) {
 
-	// 1) Consume from wallet quota OR subscription item
+	// 1) Consume from wallet quota, subscription item, or gift quota
 	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
 		if relayInfo.SubscriptionId == 0 {
 			return result, errors.New("subscription id is missing")
@@ -435,6 +450,16 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 				return result, err
 			}
 			relayInfo.SubscriptionPostDelta += delta
+		}
+	} else if relayInfo != nil && relayInfo.BillingSource == BillingSourceGift {
+		// 赠金与钱包分账：赠金渠道的扣费只作用于赠金余额（允许结算透支为负）
+		if quota > 0 {
+			err = model.DecreaseGiftQuota(relayInfo.UserId, quota)
+		} else if quota < 0 {
+			err = model.IncreaseGiftQuota(relayInfo.UserId, -quota)
+		}
+		if err != nil {
+			return result, err
 		}
 	} else {
 		// Wallet
@@ -462,7 +487,8 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 	}
 
 	if sendEmail {
-		if (quota + preConsumedQuota) != 0 {
+		// 赠金渠道不发送钱包余额告警：告警阈值基于钱包余额，对赠金扣费没有意义
+		if (quota+preConsumedQuota) != 0 && relayInfo.BillingSource != BillingSourceGift {
 			checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
 		}
 	}

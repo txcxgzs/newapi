@@ -276,7 +276,7 @@ func InitLogDB() (err error) {
 	return err
 }
 
-var userQuotaColumns = []string{"quota", "used_quota", "aff_quota", "aff_history"}
+var userQuotaColumns = []string{"quota", "gift_quota", "used_quota", "aff_quota", "aff_history"}
 
 // ensureUserQuotaColumns rejects a legacy 32-bit wallet schema before any
 // migrations run. The 64-bit-only build intentionally does not auto-upgrade
@@ -376,11 +376,26 @@ func migrateDB() error {
 		&CasbinRule{},
 		&AuthzRole{},
 		&UserAccessToken{},
+		// New API Pro：行情、商家与智能路由
+		&ChannelQuote{},
+		&ChannelMetric{},
+		&MarketCandle{},
+		&MerchantProfile{},
+		&MerchantApplication{},
+		&MerchantWallet{},
+		&MerchantEarning{},
+		&MerchantWithdrawal{},
 	)
 	if err != nil {
 		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {
+		return err
+	}
+	if err := downgradeMerchantEarningLogIdIndex(); err != nil {
+		return err
+	}
+	if err := ensurePendingMerchantApplicationUniqueIndex(); err != nil {
 		return err
 	}
 	if err := EnsureLegacyAccessTokenRetireAt(common.GetTimestamp()); err != nil {

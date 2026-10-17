@@ -28,3 +28,12 @@ var ErrRedeemFailed = errors.New("redeem.failed")
 // 2FA errors
 var ErrTwoFANotEnabled = errors.New("2fa not enabled")
 var ErrTwoFAAlreadyEnabled = errors.New("2fa already enabled")
+
+// Merchant wallet errors
+var ErrInsufficientBalance = errors.New("insufficient merchant balance")
+
+// Merchant review errors
+var (
+	ErrMerchantApplicationHandled = errors.New("merchant application already handled")
+	ErrMerchantWithdrawalHandled  = errors.New("merchant withdrawal already handled")
+)

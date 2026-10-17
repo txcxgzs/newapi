@@ -210,7 +210,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(info.UserId, false)
+	quotaEnough, err := service.CheckMidjourneySubmitQuota(info, priceData.Quota)
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
@@ -218,7 +218,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	if userQuota-priceData.Quota < 0 {
+	if !quotaEnough {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",
@@ -493,8 +493,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			}
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
+			// 同步渠道元信息上下文：action 请求实际由原任务渠道服务，
+			// 下方 InitChannelMeta 重建出的 meta 必须指向它，否则计费倍率
+			// 与用量归属都落在 distributor 误选的渠道上。
+			common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
+			common.SetContextKey(c, constant.ContextKeyChannelKey, channel.Key)
 			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 			logger.LogDebug(c, "Midjourney action uses origin channel: id=%s, base_url=%s", strconv.Itoa(originTask.ChannelId), channel.GetBaseURL())
+			relayInfo.InitChannelMeta(c)
 		}
 		midjRequest.Prompt = originTask.Prompt
 
@@ -529,7 +536,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	quotaEnough, err := service.CheckMidjourneySubmitQuota(relayInfo, priceData.Quota)
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
@@ -537,7 +544,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	if consumeQuota && userQuota-priceData.Quota < 0 {
+	if consumeQuota && !quotaEnough {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",
@@ -642,6 +649,14 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	billingApplied, billingErr := service.SettleMidjourneyTaskBilling(relayInfo, midjourneyTask, billingPrepared)
 	if billingErr != nil {
 		common.SysLog("error settling Midjourney quota: " + billingErr.Error())
+	}
+	// 提交即终态成功（任务已存在且上游已 SUCCESS / UPLOAD）：不存在后续退款，
+	// 立即按商家分成比例给计费渠道入账；常规任务由轮询在成功终态分润。
+	// 终态判定只看 Status，进度串不做门槛。
+	if billingApplied && midjourneyTask.Status == "SUCCESS" {
+		service.RecordMerchantEarningForTask(c, midjourneyTask.GetBillingChannelId(),
+			fmt.Sprintf("mj:%d", midjourneyTask.Id),
+			service.CovertMjpActionToModelName(midjourneyTask.Action), midjourneyTask.Quota)
 	}
 	if accepted {
 		service.MarkRequestPolicySuccess(c, nil)

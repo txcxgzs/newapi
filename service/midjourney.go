@@ -38,6 +38,7 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	task.Quota = 0
 	task.TokenId = 0
 	task.BillingChannelId = 0
+	task.BillingSource = ""
 	if !shouldBill {
 		return false, nil
 	}
@@ -50,6 +51,10 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	if relayInfo.BillingSource == BillingSourceSubscription {
 		return false, errors.New("legacy Midjourney billing does not support subscriptions")
 	}
+	// Legacy MJ 不经过 PrepareRequestBilling，赠金来源在此按渠道判定并写回 relayInfo，
+	// 供结算与失败退款使用同一资金来源。
+	relayInfo.BillingSource = resolveMidjourneyBillingSource(relayInfo)
+	task.BillingSource = relayInfo.BillingSource
 
 	task.Quota = quota
 	task.BillingChannelId = task.ChannelId
@@ -57,6 +62,44 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 		task.BillingChannelId = relayInfo.ChannelId
 	}
 	return true, nil
+}
+
+// resolveMidjourneyBillingSource 返回 Legacy MJ 任务实际扣费的资金来源，
+// "" 表示钱包。渠道查找失败按非赠金处理（此时请求会在后续渠道校验阶段失败）。
+func resolveMidjourneyBillingSource(relayInfo *relaycommon.RelayInfo) string {
+	if relayInfo == nil {
+		return ""
+	}
+	if relayInfo.BillingSource != "" {
+		return relayInfo.BillingSource
+	}
+	if relayInfo.ChannelId > 0 {
+		if channel, err := model.CacheGetChannel(relayInfo.ChannelId); err == nil && channel != nil && channel.GetUseGiftQuota() {
+			return BillingSourceGift
+		}
+	}
+	return relayInfo.BillingSource
+}
+
+// CheckMidjourneySubmitQuota 以任务实际扣费的资金来源校验余额（true 表示充足）。
+// Legacy MJ 没有原子预扣，提交前的余额检查就是预扣闸门：赠金渠道必须校验赠金余额，
+// 既不错误拒绝只有赠金的用户，也不允许赠金不足的任务靠钱包通过后在结算时把赠金扣成欠费。
+func CheckMidjourneySubmitQuota(relayInfo *relaycommon.RelayInfo, quota int) (bool, error) {
+	if relayInfo == nil {
+		return false, errors.New("relay info is nil")
+	}
+	if resolveMidjourneyBillingSource(relayInfo) == BillingSourceGift {
+		giftQuota, err := model.GetUserGiftQuota(relayInfo.UserId)
+		if err != nil {
+			return false, err
+		}
+		return giftQuota-quota >= 0, nil
+	}
+	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	if err != nil {
+		return false, err
+	}
+	return userQuota-quota >= 0, nil
 }
 
 // SettleMidjourneyTaskBilling charges a persisted legacy task and records the applied stages.
@@ -76,6 +119,7 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 		task.Quota = 0
 		task.TokenId = 0
 		task.BillingChannelId = 0
+		task.BillingSource = ""
 		if updateErr := task.UpdateBillingState(); updateErr != nil {
 			return false, errors.Join(billingErr, fmt.Errorf("clear Midjourney billing state: %w", updateErr))
 		}
@@ -99,7 +143,13 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 		return true
 	}
 
-	if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
+	// 退款必须回到原资金来源：赠金任务退赠金，其余退钱包
+	if task.BillingSource == BillingSourceGift {
+		if err := model.IncreaseGiftQuota(task.UserId, quota); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 用户赠金失败 task %s: %s", task.MjId, err.Error()))
+			return false
+		}
+	} else if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 用户额度失败 task %s: %s", task.MjId, err.Error()))
 		return false
 	}

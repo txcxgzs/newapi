@@ -38,6 +38,8 @@ interface UserQuotaDialogProps {
   userId: number
   currentQuota: number
   onSuccess: () => void
+  /** Which balance to adjust. Defaults to the wallet quota. */
+  kind?: 'wallet' | 'gift'
 }
 
 export function UserQuotaDialog(props: UserQuotaDialogProps) {
@@ -45,6 +47,11 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
   const [mode, setMode] = useState<QuotaAdjustMode>('add')
   const [amount, setAmount] = useState('')
   const [loading, setLoading] = useState(false)
+
+  const isGift = props.kind === 'gift'
+  const currentQuotaLabel = isGift
+    ? t('Current gift quota')
+    : t('Current quota')
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -58,12 +65,12 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
     const val = quotaValue
     switch (mode) {
       case 'add':
-        return `${t('Current quota')}: ${formatQuota(current)}  +${formatQuota(val)} = ${formatQuota(current + val)}`
+        return `${currentQuotaLabel}: ${formatQuota(current)}  +${formatQuota(val)} = ${formatQuota(current + val)}`
       case 'subtract':
-        return `${t('Current quota')}: ${formatQuota(current)}  -${formatQuota(val)} = ${formatQuota(current - val)}`
+        return `${currentQuotaLabel}: ${formatQuota(current)}  -${formatQuota(val)} = ${formatQuota(current - val)}`
       case 'override': {
         const overrideQuota = parseQuotaFromDollars(amountValue)
-        return `${t('Current quota')}: ${formatQuota(current)} → ${formatQuota(overrideQuota)}`
+        return `${currentQuotaLabel}: ${formatQuota(current)} → ${formatQuota(overrideQuota)}`
       }
       default:
         return ''
@@ -80,21 +87,33 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
         mode === 'override' ? parseQuotaFromDollars(amountValue) : quotaValue
       const result = await adjustUserQuota({
         id: props.userId,
-        action: 'add_quota',
+        action: isGift ? 'add_gift_quota' : 'add_quota',
         mode,
         value: mode === 'override' ? value : Math.abs(value),
       })
       if (result.success) {
-        toast.success(t('Quota adjusted successfully'))
+        toast.success(
+          isGift
+            ? t('Gift quota adjusted successfully')
+            : t('Quota adjusted successfully')
+        )
         setAmount('')
         setMode('add')
         props.onOpenChange(false)
         props.onSuccess()
       } else {
-        handleServerError(result, t('Failed to adjust quota'))
+        handleServerError(
+          result,
+          isGift
+            ? t('Failed to adjust gift quota')
+            : t('Failed to adjust quota')
+        )
       }
     } catch (e: unknown) {
-      handleServerError(e, t('Failed to adjust quota'))
+      handleServerError(
+        e,
+        isGift ? t('Failed to adjust gift quota') : t('Failed to adjust quota')
+      )
     } finally {
       setLoading(false)
     }
@@ -114,7 +133,7 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t('Adjust Quota')}
+      title={isGift ? t('Adjust Gift Quota') : t('Adjust Quota')}
       description={t('Select an operation mode and enter the amount')}
       contentHeight='auto'
       bodyClassName='space-y-4'

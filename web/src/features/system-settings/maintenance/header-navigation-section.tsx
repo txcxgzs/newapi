@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useEffect, useMemo } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
 
@@ -55,6 +55,8 @@ const headerNavSchema = z.object({
   pricingRequireAuth: z.boolean(),
   rankingsEnabled: z.boolean(),
   rankingsRequireAuth: z.boolean(),
+  marketEnabled: z.boolean(),
+  marketRequireAuth: z.boolean(),
   docs: z.boolean(),
   about: z.boolean(),
 })
@@ -89,6 +91,14 @@ const toFormValues = (config: HeaderNavModulesConfig): HeaderNavFormValues => ({
     config.rankings?.requireAuth === undefined
       ? HEADER_NAV_DEFAULT.rankings.requireAuth
       : Boolean(config.rankings.requireAuth),
+  marketEnabled:
+    config.market?.enabled === undefined
+      ? HEADER_NAV_DEFAULT.market.enabled
+      : Boolean(config.market.enabled),
+  marketRequireAuth:
+    config.market?.requireAuth === undefined
+      ? HEADER_NAV_DEFAULT.market.requireAuth
+      : Boolean(config.market.requireAuth),
   docs:
     config.docs === undefined ? HEADER_NAV_DEFAULT.docs : Boolean(config.docs),
   about:
@@ -114,6 +124,20 @@ export function HeaderNavigationSection({
     form.reset(formDefaults)
   }, [formDefaults, form])
 
+  // 子开关仅在父开关开启时可编辑，订阅表单值而不是调用 form.watch()
+  const pricingEnabled = useWatch({
+    control: form.control,
+    name: 'pricingEnabled',
+  })
+  const rankingsEnabled = useWatch({
+    control: form.control,
+    name: 'rankingsEnabled',
+  })
+  const marketEnabled = useWatch({
+    control: form.control,
+    name: 'marketEnabled',
+  })
+
   const onSubmit = async (values: HeaderNavFormValues) => {
     const payload: HeaderNavModulesConfig = {
       ...config,
@@ -130,6 +154,11 @@ export function HeaderNavigationSection({
         ...(config.rankings ?? HEADER_NAV_DEFAULT.rankings),
         enabled: values.rankingsEnabled,
         requireAuth: values.rankingsRequireAuth,
+      },
+      market: {
+        ...(config.market ?? HEADER_NAV_DEFAULT.market),
+        enabled: values.marketEnabled,
+        requireAuth: values.marketRequireAuth,
       },
     }
 
@@ -178,7 +207,7 @@ export function HeaderNavigationSection({
   const accessModules: Array<{
     enabledKey: keyof HeaderNavFormValues
     requireAuthKey: keyof HeaderNavFormValues
-    requireAuthDependsOn: 'pricingEnabled' | 'rankingsEnabled'
+    requireAuthDependsOn: 'pricingEnabled' | 'rankingsEnabled' | 'marketEnabled'
     title: string
     description: string
     requireAuthTitle: string
@@ -206,7 +235,24 @@ export function HeaderNavigationSection({
         'Visitors must authenticate before accessing the rankings page.'
       ),
     },
+    {
+      enabledKey: 'marketEnabled',
+      requireAuthKey: 'marketRequireAuth',
+      requireAuthDependsOn: 'marketEnabled',
+      title: t('API Market'),
+      description: t('Public live market with per-minute model pool prices.'),
+      requireAuthTitle: t('Require login to view the market'),
+      requireAuthDescription: t(
+        'Visitors must authenticate before accessing the market page.'
+      ),
+    },
   ]
+
+  const dependencyEnabled = {
+    pricingEnabled,
+    rankingsEnabled,
+    marketEnabled,
+  }
 
   return (
     <SettingsSection title={t('Header navigation')}>
@@ -283,7 +329,9 @@ export function HeaderNavigationSection({
                           <Switch
                             checked={field.value}
                             onCheckedChange={field.onChange}
-                            disabled={!form.watch(module.requireAuthDependsOn)}
+                            disabled={
+                              !dependencyEnabled[module.requireAuthDependsOn]
+                            }
                           />
                         </FormControl>
                         <FormMessage />

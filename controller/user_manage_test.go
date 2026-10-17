@@ -314,6 +314,85 @@ func TestManageUserQuotaRecordsTopupAndAudit(t *testing.T) {
 	}
 }
 
+func TestManageUserGiftQuotaAdjustsGiftLedgerOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, action, content string
+		value, wantGift             int
+	}{
+		{"add", "add", "user.gift_quota_add", "Increased user gift quota by 500", 500, 1500},
+		{"subtract", "subtract", "user.gift_quota_subtract", "Decreased user gift quota by 500", 500, 500},
+		{"override", "override", "user.gift_quota_override", "Overrode user gift quota from 1000 to 500", 500, 500},
+		{"override_negative", "override", "user.gift_quota_override", "Overrode user gift quota from 1000 to -1", -1, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupManageUserTestDB(t)
+			user := model.User{Username: "gift-owner", Role: common.RoleCommonUser, Quota: 7000, GiftQuota: 1000, AffCode: "gift-owner-aff"}
+			require.NoError(t, db.Create(&user).Error)
+			createQuotaTestOperator(t, db, common.RoleRootUser)
+
+			recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"add_gift_quota","mode":%q,"value":%d}`, user.Id, tc.mode, tc.value))
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			require.Contains(t, recorder.Body.String(), `"success":true`)
+			require.NoError(t, db.First(&user, user.Id).Error)
+			assert.Equal(t, tc.wantGift, user.GiftQuota)
+			assert.Equal(t, 7000, user.Quota, "gift adjustments must not touch the wallet")
+
+			logs, total, err := model.GetAllLogs(model.LogTypeTopup, 0, 0, "", "", "", 0, 20, 0, "", "", "")
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, total)
+			require.Len(t, logs, 1)
+			assert.Equal(t, user.Id, logs[0].UserId)
+			assert.Equal(t, tc.content, logs[0].Content)
+			model.FormatAdminLogs(logs)
+			var other model.AuditOther
+			require.NoError(t, common.UnmarshalJsonStr(logs[0].Other, &other))
+			require.NotNil(t, other.Op)
+			assert.Equal(t, tc.action, other.Op.Action)
+			params, err := common.Marshal(other.Op.Params)
+			require.NoError(t, err)
+			expectedParams := model.AuditFields{"target_user_id": user.Id, "target_username": user.Username, "mode": tc.mode, "requested_quota": tc.value, "from": 1000, "to": tc.wantGift}
+			if tc.mode != "override" {
+				expectedParams["quota"] = tc.value
+			}
+			expected, err := common.Marshal(expectedParams)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expected), string(params))
+
+			var audits []model.AuditLog
+			require.NoError(t, model.LOG_DB.Find(&audits).Error)
+			require.Len(t, audits, 1)
+			assert.Equal(t, tc.action, audits[0].Action)
+			assert.True(t, audits[0].Success)
+			params, err = common.Marshal(audits[0].Other.Op.Params)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expected), string(params))
+		})
+	}
+
+	t.Run("invalid_mode_rejected", func(t *testing.T) {
+		db := setupManageUserTestDB(t)
+		user := model.User{Username: "gift-owner", Role: common.RoleCommonUser, Quota: 7000, GiftQuota: 1000, AffCode: "gift-owner-aff"}
+		require.NoError(t, db.Create(&user).Error)
+		createQuotaTestOperator(t, db, common.RoleRootUser)
+
+		recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"add_gift_quota","mode":"invalid","value":500}`, user.Id))
+		assert.Contains(t, recorder.Body.String(), `"success":false`)
+		require.NoError(t, db.First(&user, user.Id).Error)
+		assert.Equal(t, 1000, user.GiftQuota)
+		assert.Equal(t, 7000, user.Quota)
+
+		var logCount, auditCount int64
+		require.NoError(t, model.LOG_DB.Model(&model.Log{}).Count(&logCount).Error)
+		require.NoError(t, model.LOG_DB.Model(&model.AuditLog{}).Count(&auditCount).Error)
+		assert.Zero(t, logCount)
+		assert.EqualValues(t, 1, auditCount)
+		var audit model.AuditLog
+		require.NoError(t, model.LOG_DB.First(&audit).Error)
+		assert.False(t, audit.Success)
+		assert.Equal(t, "Failed user gift quota adjustment", audit.Content)
+	})
+}
+
 func TestManageUserQuotaFailuresDoNotRecordTopup(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode string

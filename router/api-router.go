@@ -43,6 +43,13 @@ func SetApiRouter(router *gin.Engine) {
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
+		// New API Pro：公开行情（K线与盘口总览）
+		marketRoute := apiRouter.Group("/market")
+		marketRoute.Use(middleware.HeaderNavModuleAuth("market"))
+		{
+			marketRoute.GET("/overview", controller.GetMarketOverview)
+			marketRoute.GET("/kline", controller.GetMarketKline)
+		}
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ResetPassword)
@@ -258,6 +265,55 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			ratioSyncRoute.GET("/channels", controller.GetSyncableChannels)
 			ratioSyncRoute.POST("/fetch", controller.FetchUpstreamRatios)
+		}
+		// New API Pro：盘口报价管理
+		channelQuoteRoute := apiRouter.Group("/channel_quotes")
+		channelQuoteRoute.Use(middleware.AdminAuth())
+		{
+			channelQuoteRoute.GET("/", controller.GetChannelQuotes)
+			channelQuoteRoute.PUT("/", controller.UpsertManualQuote)
+			channelQuoteRoute.DELETE("/:id", controller.DeleteChannelQuote)
+			channelQuoteRoute.POST("/sync", controller.SyncChannelQuotes)
+		}
+		// New API Pro：商家入驻（登录用户）与商家门户（商家角色，数据隔离）
+		merchantRoute := apiRouter.Group("/merchant")
+		merchantRoute.Use(middleware.UserAuth())
+		{
+			merchantRoute.POST("/apply", controller.PostMerchantApplication)
+			// 外呼探测会以服务器身份访问商家填写的站址，叠加用户级限频防滥用
+			//（默认 20 次/20 分钟；另有全局 IP 限频兜底）。
+			merchantRoute.POST("/apply/probe", middleware.UserCriticalRateLimit("merchant-probe"), controller.ProbeMerchantApplyUpstream)
+			merchantRoute.GET("/platform/models", controller.GetMerchantPlatformModels)
+			merchantRoute.GET("/application", controller.GetMyMerchantApplication)
+		}
+		merchantPortalRoute := apiRouter.Group("/merchant/portal")
+		merchantPortalRoute.Use(middleware.MerchantAuth())
+		{
+			merchantPortalRoute.GET("/summary", controller.GetMerchantPortalSummary)
+			merchantPortalRoute.GET("/pools", controller.GetMerchantPortalPools)
+			merchantPortalRoute.GET("/earnings", controller.GetMerchantPortalEarnings)
+			merchantPortalRoute.GET("/quotes", controller.GetMerchantPortalQuotes)
+			merchantPortalRoute.PUT("/rate", controller.UpdateMerchantPortalRate)
+			// 外呼接口：报价同步与渠道探测都以服务器身份访问上游，叠加用户级限频。
+			merchantPortalRoute.POST("/sync", middleware.UserCriticalRateLimit("merchant-sync"), controller.SyncMerchantPortalQuotes)
+			merchantPortalRoute.POST("/channel/probe", middleware.UserCriticalRateLimit("merchant-probe"), controller.ProbeMerchantChannel)
+			merchantPortalRoute.PUT("/channel", controller.UpdateMerchantChannel)
+			merchantPortalRoute.GET("/logs", controller.GetMerchantPortalLogs)
+			merchantPortalRoute.GET("/withdrawals", controller.GetMerchantWithdrawals)
+			merchantPortalRoute.POST("/withdrawals", controller.PostMerchantWithdrawal)
+		}
+		// New API Pro：商家管理（管理员）
+		merchantAdminRoute := apiRouter.Group("/merchant_manage")
+		merchantAdminRoute.Use(middleware.AdminAuth())
+		{
+			merchantAdminRoute.GET("/applications", controller.GetMerchantApplications)
+			merchantAdminRoute.POST("/applications/:id/review", controller.ReviewMerchantApplication)
+			merchantAdminRoute.POST("/applications/:id/probe", controller.ProbeMerchantApplication)
+			merchantAdminRoute.GET("/list", controller.GetMerchants)
+			merchantAdminRoute.GET("/overview", controller.GetMerchantOverview)
+			merchantAdminRoute.PUT("/:id", controller.UpdateMerchant)
+			merchantAdminRoute.GET("/withdrawals", controller.AdminGetMerchantWithdrawals)
+			merchantAdminRoute.POST("/withdrawals/:id/review", controller.ReviewMerchantWithdrawal)
 		}
 		taskPluginRoute := apiRouter.Group("/plugin/task")
 		taskPluginRoute.Use(middleware.RootAuth())

@@ -296,6 +296,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					return apiErr
 				}
 				billingPrepared = true
+				service.EnsureGiftBillingFilter(c, info.BillingSource)
 			} else {
 				info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 				if apiErr = service.PrepareTieredBillingForSelectedGroup(c, info); apiErr != nil {

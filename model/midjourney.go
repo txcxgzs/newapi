@@ -26,6 +26,8 @@ type Midjourney struct {
 
 	TokenId          int `json:"-" gorm:"default:0"`
 	BillingChannelId int `json:"-" gorm:"default:0"`
+	// BillingSource 持久化计费来源（"" 钱包 / "gift" 赠金），失败退款必须退回到原资金来源
+	BillingSource string `json:"-" gorm:"type:varchar(20);default:''"`
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
@@ -175,7 +177,7 @@ func (midjourney *Midjourney) Update() error {
 
 func (midjourney *Midjourney) UpdateBillingState() error {
 	return DB.Model(midjourney).
-		Select("quota", "token_id", "billing_channel_id").
+		Select("quota", "token_id", "billing_channel_id", "billing_source").
 		Updates(midjourney).Error
 }
 

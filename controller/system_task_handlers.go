@@ -22,6 +22,39 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(priceSyncHandler{})
+	service.RegisterSystemTaskHandler(routingOptimizerHandler{})
+	service.RegisterSystemTaskHandler(candleAggHandler{})
+}
+
+// priceSyncHandler 定时拉取开启同步的渠道上游报价，写入盘口 channel_quotes。
+type priceSyncHandler struct{}
+
+func (priceSyncHandler) Type() string { return model.SystemTaskTypePriceSync }
+
+func (priceSyncHandler) Enabled() bool {
+	return operation_setting.GetMarketSetting().PriceSyncEnabled
+}
+
+func (priceSyncHandler) Interval() time.Duration {
+	minutes := operation_setting.GetMarketSetting().PriceSyncMinutes
+	if minutes <= 0 {
+		minutes = 10
+	}
+	return time.Duration(minutes * float64(time.Minute))
+}
+
+func (priceSyncHandler) NewPayload() any { return nil }
+
+func (priceSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	summary := RunPriceSync(ctx, 0, false, service.NewSystemTaskProgressReporter(task, runnerID))
+	status := model.SystemTaskStatusSucceeded
+	var runErr error
+	if summary.TotalChannels > 0 && summary.SyncedChannels == 0 && summary.FailedChannels > 0 {
+		status = model.SystemTaskStatusFailed
+		runErr = fmt.Errorf("全部 %d 个渠道同步失败", summary.FailedChannels)
+	}
+	finishSystemTaskHandler(task, runnerID, status, summary, runErr)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and

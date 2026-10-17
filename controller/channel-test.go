@@ -891,6 +891,8 @@ func TestChannel(c *gin.Context) {
 	milliseconds := tok.Sub(tik).Milliseconds()
 	go channel.UpdateResponseTime(milliseconds)
 	consumedTime := float64(milliseconds) / 1000.0
+	// New API Pro：手动单测同样计入渠道质量画像（智能路由数据源）
+	_ = model.RecordChannelTestOutcome(channelId, result.newAPIError == nil, int(milliseconds), 0)
 	if result.newAPIError != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success":    false,
@@ -958,6 +960,9 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
 		summary.Enabled++
 	}
+
+	// New API Pro：测活结果计入渠道质量画像（智能路由数据源）
+	_ = model.RecordChannelTestOutcome(channel.Id, newAPIError == nil, int(milliseconds), 0)
 
 	channel.UpdateResponseTime(milliseconds)
 	return summary

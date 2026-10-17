@@ -88,6 +88,7 @@ var channelReadOnlyFields = map[string]struct{}{
 	"balance":              {},
 	"balance_updated_time": {},
 	"used_quota":           {},
+	"merchant_id":          {}, // New API Pro：由商家审核流程归属，普通编辑不可改
 }
 
 func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]any) {
@@ -108,6 +109,9 @@ func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]an
 	}
 	if _, ok := requestData["used_quota"]; ok {
 		channel.UsedQuota = 0
+	}
+	if _, ok := requestData["merchant_id"]; ok {
+		channel.MerchantId = 0
 	}
 }
 
@@ -133,4 +137,11 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"remark":              {},
 	"channel_info":        {},
 	"multi_key_mode":      {},
+	// New API Pro：智能路由与报价同步开关（路由类，管理员可编辑）
+	"auto_routing": {},
+	"price_sync":   {},
+	// New API Pro：商家渠道倍率（定价类，商家可自助调整，非敏感）
+	"rate_multiplier": {},
+	// 赠金渠道开关（计费来源类，管理员可编辑，非敏感）
+	"use_gift_quota": {},
 }

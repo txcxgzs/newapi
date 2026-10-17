@@ -322,3 +322,14 @@ this software, either in source code form or as a compiled binary, for any
 purpose, commercial or non-commercial, and by any means.
 
 For more information, please refer to https://unlicense.org/
+
+## Source Attributions (derived UI components)
+
+The following frontend components are adapted from the New API fork
+[CuzTeam/new-api](https://github.com/CuzTeam/new-api) (AGPL-3.0, © Cuz Technology).
+They keep their original AGPL-3.0 license terms and copyright headers:
+
+| Component                          | Source path (upstream)                          | Adaptation                                        |
+|------------------------------------|--------------------------------------------------|---------------------------------------------------|
+| `web/src/features/home/components/hub-diagram.tsx`   | `web/src/features/home/components/hub-diagram.tsx` | Upstream icon names adjusted to the local icon registry |
+| `web/src/features/home/components/flip-words.tsx`    | `web/src/features/home/components/flip-words.tsx`   | Letter-stagger/blur entrance simplified to a whole-word fade |

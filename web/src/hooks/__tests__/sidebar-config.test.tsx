@@ -22,14 +22,17 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { checkIsActive } from '@/components/layout/lib/url-utils'
+import type { NavItem } from '@/components/layout/types'
 import {
   parseSidebarModulesAdmin,
   serializeSidebarModulesAdmin,
 } from '@/features/system-settings/maintenance/config'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { useSidebarConfig } from '../use-sidebar-config'
 import { useSidebarData } from '../use-sidebar-data'
+import { isNavItemVisibleForRole } from '../use-sidebar-view'
 
 beforeEach(() => {
   vi.stubGlobal('localStorage', {
@@ -83,7 +86,13 @@ describe('security sidebar visibility', () => {
       result.current
         .find((group) => group.id === 'personal')
         ?.items.map((item) => item.title)
-    ).toEqual(['Wallet', 'Profile', 'Security & Access'])
+    ).toEqual([
+      'Wallet',
+      'Merchant Portal',
+      'Merchant Application',
+      'Profile',
+      'Security & Access',
+    ])
     expect(
       result.current
         .flatMap((group) => group.items)
@@ -178,5 +187,44 @@ describe('audit log sidebar entry', () => {
       .map((item) => item.title)
     expect(titles).not.toContain('Usage Logs')
     expect(titles).toContain('Audit Logs')
+  })
+})
+
+describe('sidebar role visibility', () => {
+  it('keeps items without role bounds visible for every role', () => {
+    const item: NavItem = { title: 'Profile', url: '/profile' }
+
+    for (const role of [
+      ROLE.GUEST,
+      ROLE.USER,
+      ROLE.MERCHANT,
+      ROLE.ADMIN,
+      ROLE.SUPER_ADMIN,
+    ]) {
+      expect(isNavItemVisibleForRole(item, role)).toBe(true)
+    }
+  })
+
+  it('hides the merchant portal below the merchant role', () => {
+    const item: NavItem = {
+      title: 'Merchant Portal',
+      url: '/merchant',
+      requiredRole: ROLE.MERCHANT,
+    }
+
+    expect(isNavItemVisibleForRole(item, ROLE.USER)).toBe(false)
+    expect(isNavItemVisibleForRole(item, ROLE.MERCHANT)).toBe(true)
+  })
+
+  it('hides the merchant application once the user has the merchant role', () => {
+    const item: NavItem = {
+      title: 'Merchant Application',
+      url: '/merchant/apply',
+      maxRole: ROLE.MERCHANT - 1,
+    }
+
+    expect(isNavItemVisibleForRole(item, ROLE.USER)).toBe(true)
+    expect(isNavItemVisibleForRole(item, ROLE.MERCHANT)).toBe(false)
+    expect(isNavItemVisibleForRole(item, ROLE.SUPER_ADMIN)).toBe(false)
   })
 })

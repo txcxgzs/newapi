@@ -507,6 +507,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"telegram_id":       user.TelegramId,
 		"group":             user.Group,
 		"quota":             user.Quota,
+		"gift_quota":        user.GiftQuota,
 		"used_quota":        user.UsedQuota,
 		"request_count":     user.RequestCount,
 		"aff_code":          user.AffCode,
@@ -1098,6 +1099,10 @@ func ManageUser(c *gin.Context) {
 		manageUserQuota(c, req)
 		return
 	}
+	if req.Action == "add_gift_quota" {
+		manageUserGiftQuota(c, req)
+		return
+	}
 	user := model.User{
 		Id: req.Id,
 	}
@@ -1112,6 +1117,7 @@ func ManageUser(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
+	demotedMerchantId := 0
 	switch req.Action {
 	case "disable":
 		user.Status = common.UserStatusDisabled
@@ -1174,6 +1180,9 @@ func ManageUser(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgUserAlreadyCommon)
 			return
 		}
+		if user.Role == common.RoleMerchant {
+			demotedMerchantId = user.Id
+		}
 		user.Role = common.RoleCommonUser
 	default:
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
@@ -1189,10 +1198,35 @@ func ManageUser(c *gin.Context) {
 			if err := user.UpdateWithTx(tx, false); err != nil {
 				return err
 			}
+			// 商家被降级：停用商家资料并让其渠道退出报价同步/智能路由，
+			// 否则角色已不是商家却仍在入账，门户又无法访问。
+			if demotedMerchantId > 0 {
+				if err := tx.Model(&model.MerchantProfile{}).
+					Where("user_id = ?", demotedMerchantId).
+					Updates(map[string]any{
+						"status":     model.MerchantStatusSuspended,
+						"updated_at": common.GetTimestamp(),
+					}).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&model.Channel{}).
+					Where("merchant_id = ?", demotedMerchantId).
+					Updates(map[string]any{"price_sync": false, "auto_routing": false}).Error; err != nil {
+					return err
+				}
+				// 渠道整体停用：只关同步/路由开关，渠道仍会继续承接付费流量。
+				if _, err := model.DisableMerchantChannelsInTx(tx, demotedMerchantId); err != nil {
+					return err
+				}
+			}
 			return authz.ClearUserAuthorizationInTx(tx, user.Id)
 		}); err != nil {
 			common.ApiError(c, err)
 			return
+		}
+		// 渠道状态变了，刷新内存渠道缓存保证路由即时生效
+		if common.MemoryCacheEnabled {
+			model.InitChannelCache()
 		}
 		if err := authz.ReloadPolicy(); err != nil {
 			common.ApiError(c, err)

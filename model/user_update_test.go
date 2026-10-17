@@ -54,6 +54,7 @@ func TestUserUpdateDoesNotOverwriteConcurrentAccountingOrTokenChanges(t *testing
 		DisplayName:     "before",
 		Status:          common.UserStatusEnabled,
 		Quota:           1000,
+		GiftQuota:       700,
 		UsedQuota:       20,
 		RequestCount:    3,
 		AffCount:        2,
@@ -68,6 +69,7 @@ func TestUserUpdateDoesNotOverwriteConcurrentAccountingOrTokenChanges(t *testing
 
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Updates(map[string]any{
 		"quota":         gorm.Expr("quota - ?", 400),
+		"gift_quota":    gorm.Expr("gift_quota - ?", 200),
 		"used_quota":    gorm.Expr("used_quota + ?", 400),
 		"request_count": gorm.Expr("request_count + ?", 1),
 		"aff_count":     gorm.Expr("aff_count + ?", 1),
@@ -83,6 +85,7 @@ func TestUserUpdateDoesNotOverwriteConcurrentAccountingOrTokenChanges(t *testing
 	require.NoError(t, DB.First(&got, user.Id).Error)
 	assert.Equal(t, "after", got.DisplayName)
 	assert.Equal(t, 600, got.Quota)
+	assert.Equal(t, 500, got.GiftQuota)
 	assert.Equal(t, 420, got.UsedQuota)
 	assert.Equal(t, 4, got.RequestCount)
 	assert.Equal(t, 3, got.AffCount)
