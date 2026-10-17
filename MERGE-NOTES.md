@@ -53,9 +53,10 @@
 3. `controller/user_manage_test.go:340`：`GetAllLogs` 旧 12 参数签名 → `model.GetAllLogs(model.LogFilter{Type: model.LogTypeTopup}, 0, 20)`
 4. `controller/access_token_audit_test.go`：SQLite 测试库补 `t.Cleanup` 关连接（上游此处在 Windows 上 TempDir 删除会失败，Linux CI 无感，不影响程序）
 
-### npm 兼容修复 1 处
+### npm 兼容调整 2 处
 
 - `web/package.json`：`dependencies.katex` 由 `^0.18.2` 改为 `0.18.2`（必须与 `overrides.katex` 完全一致 npm 才允许安装；上游用 bun 不报此错，改用 bun 后可不再需要）
+- `web/package.json`：`devDependencies.oxlint` 由 `^1.72.0` 钉为 `1.74.0`（对齐上游 bun.lock 的锁定版本；`^` 会浮到 1.86 引入 300+ 条新规则报错，而魔改文件在 1.74 下 lint 干净。上游换 oxlint 版本时跟着调这里）
 
 ### 本次顺手减债
 
