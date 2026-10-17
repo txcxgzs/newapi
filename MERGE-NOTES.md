@@ -53,6 +53,10 @@
 3. `controller/user_manage_test.go:340`：`GetAllLogs` 旧 12 参数签名 → `model.GetAllLogs(model.LogFilter{Type: model.LogTypeTopup}, 0, 20)`
 4. `controller/access_token_audit_test.go`：SQLite 测试库补 `t.Cleanup` 关连接（上游此处在 Windows 上 TempDir 删除会失败，Linux CI 无感，不影响程序）
 
+### npm 兼容修复 1 处
+
+- `web/package.json`：`dependencies.katex` 由 `^0.18.2` 改为 `0.18.2`（必须与 `overrides.katex` 完全一致 npm 才允许安装；上游用 bun 不报此错，改用 bun 后可不再需要）
+
 ### 本次顺手减债
 
 - 商家门户查询函数（MerchantLogQueryParams、GetMerchantChannelLogs、GetMerchantChannelLogStats、GetMerchantChannelTrafficByGroup、GetMerchantChannelHealth、FormatMerchantLogs）从 model/log.go 移到 model/merchant_log.go，以后 log.go 再重构不再连带冲突
