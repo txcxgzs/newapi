@@ -33,6 +33,18 @@ const QUOTA_OPERATIONS: Record<string, { label: string; named: string }> = {
     label: 'Override user quota',
     named: 'Override quota for user “{{name}}”',
   },
+  'user.gift_quota_add': {
+    label: 'Increase user gift quota',
+    named: 'Increase gift quota for user “{{name}}”',
+  },
+  'user.gift_quota_subtract': {
+    label: 'Decrease user gift quota',
+    named: 'Decrease gift quota for user “{{name}}”',
+  },
+  'user.gift_quota_override': {
+    label: 'Override user gift quota',
+    named: 'Override gift quota for user “{{name}}”',
+  },
 }
 
 function quotaText(value: unknown, t: Translate): string {
@@ -49,10 +61,18 @@ export function buildQuotaAuditOperation(
   success: boolean,
   t: Translate
 ) {
-  const unknownMode = action === 'generic' && params.action === 'add_quota'
-  const operation = unknownMode
-    ? { label: 'Adjust user quota', named: 'Adjust quota for user “{{name}}”' }
-    : QUOTA_OPERATIONS[action]
+  const unknownMode =
+    action === 'generic' &&
+    (params.action === 'add_quota' || params.action === 'add_gift_quota')
+  let operation: { label: string; named: string } | undefined
+  if (unknownMode) {
+    operation =
+      params.action === 'add_gift_quota'
+        ? { label: 'Adjust user gift quota', named: 'Adjust gift quota for user “{{name}}”' }
+        : { label: 'Adjust user quota', named: 'Adjust quota for user “{{name}}”' }
+  } else {
+    operation = QUOTA_OPERATIONS[action]
+  }
   if (!operation) return null
   const name =
     typeof params.target_username === 'string'
@@ -74,7 +94,11 @@ export function buildQuotaAuditOperation(
     ? t('{{operation}} (ID: {{id}})', { operation: headline, id })
     : headline
   let requested = params.requested_quota ?? params.quota
-  if (requested === undefined && success && action === 'user.quota_override') {
+  if (
+    requested === undefined &&
+    success &&
+    (action === 'user.quota_override' || action === 'user.gift_quota_override')
+  ) {
     requested = params.to
   }
   const amount = quotaText(requested, t)

@@ -324,6 +324,10 @@ func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.P
 	if priceData.GroupRatioInfo.HasSpecialRatio {
 		other.SetPublic("user_group_ratio", priceData.GroupRatioInfo.GroupSpecialRatio)
 	}
+	// 与文本日志口径一致：钱包/订阅/赠金都要标记资金来源，供前端成本列区分展示
+	if relayInfo != nil && relayInfo.BillingSource != "" {
+		other.SetPublic("billing_source", relayInfo.BillingSource)
+	}
 	appendRequestPath(nil, relayInfo, other)
 	return other
 }

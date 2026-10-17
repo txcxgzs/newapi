@@ -146,7 +146,7 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 	// 退款必须回到原资金来源：赠金任务退赠金，其余退钱包
 	if task.BillingSource == BillingSourceGift {
 		if err := model.IncreaseGiftQuota(task.UserId, quota); err != nil {
-			logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 用户赠金失败 task %s: %s", task.MjId, err.Error()))
+			logger.LogWarn(ctx, common.LogText("failed to refund Midjourney user gift quota, task %s: %s", task.MjId, err.Error()))
 			return false
 		}
 	} else if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
@@ -169,6 +169,10 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 	other := model.NewLogOther()
 	other.SetPublic("task_id", task.MjId)
 	other.SetPublic("reason", reason)
+	// 退款必须能看出资金回到了哪里：赠金任务退赠金，其余退钱包
+	if task.BillingSource != "" {
+		other.SetPublic("billing_source", task.BillingSource)
+	}
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    task.UserId,
 		LogType:   model.LogTypeRefund,

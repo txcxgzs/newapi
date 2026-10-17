@@ -490,13 +490,13 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		}
 		if giftQuota <= 0 {
 			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("赠金渠道仅支持赠金扣费, 用户赠金不足, 剩余赠金: %s", logger.FormatQuota(giftQuota)),
+				errors.New(i18n.T(c, i18n.MsgQuotaGiftInsufficient, map[string]any{"Remaining": logger.FormatQuota(giftQuota)})),
 				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		if giftQuota-preConsumedQuota < 0 {
 			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("预扣费额度失败, 用户剩余赠金: %s, 需要预扣费额度: %s", logger.FormatQuota(giftQuota), logger.FormatQuota(preConsumedQuota)),
+				errors.New(i18n.T(c, i18n.MsgQuotaGiftPreConsumeInsufficient, map[string]any{"Remaining": logger.FormatQuota(giftQuota), "Required": logger.FormatQuota(preConsumedQuota)})),
 				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
@@ -504,6 +504,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		session := &BillingSession{
 			relayInfo: relayInfo,
 			funding:   &GiftFunding{userId: relayInfo.UserId},
+			lang:      i18n.StatedLang(c),
 		}
 		if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
 			return nil, apiErr

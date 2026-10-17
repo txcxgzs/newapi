@@ -125,6 +125,30 @@ const cases = [
       'Override user quota · Target not recorded · Requested quota: $0 · $1 → $0',
     chinese: '覆盖用户额度 · 目标未记录 · 请求数额：$0 · $1 → $0',
   },
+  {
+    action: 'user.gift_quota_add',
+    params: {
+      target_user_id: 42,
+      target_username: 'quota-owner',
+      mode: 'add',
+      requested_quota: 500000,
+      quota: 500000,
+      from: 500000,
+      to: 1000000,
+    },
+    english:
+      'Increase gift quota for user “quota-owner” (ID: 42) · Requested quota: $1 · $1 → $2',
+    chinese:
+      '增加用户「quota-owner」的赠金额度（ID: 42） · 请求数额：$1 · $1 → $2',
+  },
+  {
+    action: 'generic',
+    params: { action: 'add_gift_quota', mode: 'add', quota: 500000 },
+    english:
+      'Adjust user gift quota · Target not recorded · Requested quota: $1 · Not recorded → Not recorded',
+    chinese:
+      '调整用户赠金额度 · 目标未记录 · 请求数额：$1 · 未记录 → 未记录',
+  },
 ]
 
 describe('quota adjustment log localization', () => {

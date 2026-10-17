@@ -39,6 +39,11 @@ type merchantModelQuote struct {
 // merchantChannelModelLimit 审核通过时写入渠道的模型数上限（探测清单可能很长）。
 const merchantChannelModelLimit = 200
 
+// merchantRateMultiplierLimit 渠道倍率（相对平台标准价的折扣系数）上限。
+// 商家门户调倍率已有 0（不含）~100 的校验，提交申请、编辑渠道与审核通过
+// 同样必须拦截，否则可以绕过门户把天价倍率写进渠道的派生盘口。
+const merchantRateMultiplierLimit = 100.0
+
 // ---------- 用户侧：入驻申请 ----------
 
 // PostMerchantApplication 登录用户提交商家入驻申请。
@@ -73,8 +78,8 @@ func PostMerchantApplication(c *gin.Context) {
 		}
 		req.Models[i].Model = name
 	}
-	if req.RateMultiplier < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率不能为负数"})
+	if req.RateMultiplier < 0 || req.RateMultiplier > merchantRateMultiplierLimit {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率不能为负数，且不能超过 100"})
 		return
 	}
 
@@ -385,8 +390,19 @@ func UpdateMerchantChannel(c *gin.Context) {
 	}
 	if req.Models != nil {
 		for _, m := range *req.Models {
-			if strings.TrimSpace(m.Model) == "" {
+			name := strings.TrimSpace(m.Model)
+			if name == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型对接存在空条目"})
+				return
+			}
+			// 与提交/审核入口同一套校验：逗号会被拆成多个模型，等于绕过
+			// 逐模型审核；平台没定价的模型上架后客户请求会撞"价格未配置"。
+			if strings.ContainsAny(name, ", \t\r\n") {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型名不能包含逗号或空白字符：" + name})
+				return
+			}
+			if !isPlatformPriceableModel(name) {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型未在平台配置价格（固定价格/模型倍率/阶梯计费），请先在平台定价后再上架：" + name})
 				return
 			}
 		}
@@ -981,7 +997,7 @@ func UpdateMerchantPortalRate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
-	if req.RateMultiplier <= 0 || req.RateMultiplier > 100 {
+	if req.RateMultiplier <= 0 || req.RateMultiplier > merchantRateMultiplierLimit {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率需在 0（不含）到 100 之间"})
 		return
 	}
@@ -1269,9 +1285,21 @@ func ReviewMerchantApplication(c *gin.Context) {
 
 	// 渠道倍率：优先用管理员审核时填的值，否则沿用商家申请时声明的值。
 	// 这是渠道唯一的定价输入，盘口由「平台标准倍率 × 本倍率」派生。
+	// 上界与商家门户保持一致；申请若在提交校验修复前落库了超限倍率，
+	// 审核时也必须拦截，不能把天价盘口放进渠道。
 	rateMultiplier := normalizeRateMultiplier(preview.RateMultiplier)
-	if req.RateMultiplier != nil && *req.RateMultiplier > 0 {
-		rateMultiplier = *req.RateMultiplier
+	if req.RateMultiplier != nil {
+		if *req.RateMultiplier < 0 || *req.RateMultiplier > merchantRateMultiplierLimit {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率不能为负数，且不能超过 100"})
+			return
+		}
+		if *req.RateMultiplier > 0 {
+			rateMultiplier = *req.RateMultiplier
+		}
+	}
+	if approve && rateMultiplier > merchantRateMultiplierLimit {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请声明的渠道倍率超过 100，请修正后再通过审核"})
+		return
 	}
 
 	// 通过前的校验与探测放在事务之外：号池、站址（SSRF）、上游类型与模型清单。
@@ -1285,6 +1313,14 @@ func ReviewMerchantApplication(c *gin.Context) {
 		if len(req.Pools) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "审核通过时必须勾选至少一个号池"})
 			return
+		}
+		// 号池即渠道分组：不存在的分组会让渠道挂进"死池"，没有用户组能匹配到它。
+		knownPools := ratio_setting.GetGroupRatioCopy()
+		for _, pool := range req.Pools {
+			if _, ok := knownPools[pool]; !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "号池（分组）不存在：" + pool})
+				return
+			}
 		}
 		if err := service.ValidateSSRFProtectedFetchURL(preview.SiteUrl); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{

@@ -294,4 +294,28 @@ func TestMidjourneyGiftBillingDetectionAndRefund(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 5_000, wallet, "gift-billed task refund must not touch the wallet")
 	assert.Zero(t, giftTask.Quota)
+
+	// 退款日志必须标记资金来源，前端成本列才能看出退款回到了哪里
+	refundLog := getLastLog(t)
+	require.NotNil(t, refundLog)
+	assert.Equal(t, model.LogTypeRefund, refundLog.Type)
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(refundLog.Other, &other))
+	assert.Equal(t, BillingSourceGift, other["billing_source"])
+	assert.Equal(t, "unit-test", other["reason"])
+}
+
+func TestDecreaseGiftQuotaReportsMissingUser(t *testing.T) {
+	truncate(t)
+
+	err := model.DecreaseGiftQuota(999_999, 100)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "扣减不存在的用户必须暴露，否则扣费静默成功")
+
+	user := model.User{Username: "gift-decrease", Quota: 500, GiftQuota: 500, Status: common.UserStatusEnabled}
+	require.NoError(t, model.DB.Create(&user).Error)
+	require.NoError(t, model.DecreaseGiftQuota(user.Id, 100))
+
+	gift, err := model.GetUserGiftQuota(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 400, gift)
 }

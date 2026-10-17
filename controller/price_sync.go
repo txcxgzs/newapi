@@ -371,9 +371,12 @@ func syncQuotesForChannel(channel *model.Channel, drafts []channelQuoteDraft) (i
 		}
 	}
 
+	// 渠道没有声明任何模型（served 为空）时不能放行全部上游报价：那会给
+	// 根本不是本渠道服务范围的模型铺满"幽灵盘口"。与 RebuildChannelQuotesWithTx
+	// 的语义保持一致——没有模型即没有可挂的盘口，走下方清理分支清干净。
 	quotes := make([]model.ChannelQuote, 0, len(drafts)*len(pools))
 	for _, draft := range drafts {
-		if len(served) > 0 && !served[draft.ModelName] {
+		if !served[draft.ModelName] {
 			continue
 		}
 		for _, pool := range pools {

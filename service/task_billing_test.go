@@ -1810,3 +1810,55 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestTaskLogsCarryBillingSource 回归：任务日志必须携带资金来源，
+// 前端成本列才能区分钱包/赠金/订阅扣费；空来源不得写出脏字段。
+func TestTaskLogsCarryBillingSource(t *testing.T) {
+	for _, tc := range []struct {
+		source  string
+		wantSet bool
+		wantAny any
+	}{
+		{BillingSourceGift, true, BillingSourceGift},
+		{BillingSourceWallet, true, BillingSourceWallet},
+		{BillingSourceSubscription, true, BillingSourceSubscription},
+		{"", false, nil},
+	} {
+		t.Run("source="+tc.source, func(t *testing.T) {
+			truncate(t)
+			const userID, channelID = 46, 46
+			seedUser(t, userID, 10_000)
+			seedChannel(t, channelID)
+
+			task := makeTask(userID, channelID, 100, 0, tc.source, 0)
+			other := taskBillingOther(task).Snapshot()
+			if tc.wantSet {
+				assert.Equal(t, tc.wantAny, other["billing_source"])
+			} else {
+				assert.NotContains(t, other, "billing_source")
+			}
+
+			info := &relaycommon.RelayInfo{
+				UserId:          userID,
+				OriginModelName: "test-model",
+				UsingGroup:      "default",
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelId: channelID},
+				TaskRelayInfo:   &relaycommon.TaskRelayInfo{Action: "GENERATE"},
+				PriceData: types.PriceData{
+					ModelPrice:     0.02,
+					Quota:          100,
+					GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1},
+				},
+			}
+			log := callLogTaskConsumption(t, info, task)
+			require.NotNil(t, log)
+			var stored map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(log.Other, &stored))
+			if tc.wantSet {
+				assert.Equal(t, tc.wantAny, stored["billing_source"])
+			} else {
+				assert.NotContains(t, stored, "billing_source")
+			}
+		})
+	}
+}

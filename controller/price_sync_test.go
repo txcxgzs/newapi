@@ -315,3 +315,66 @@ func TestRunRoutingOptimizePersistsChannelMetric(t *testing.T) {
 	assert.NotZero(t, updated.GetPriority())
 	assert.Positive(t, updated.GetWeight())
 }
+
+// TestSyncQuotesForChannelWithoutDeclaredModelsWritesNoQuotes 回归：
+// 渠道没有声明任何模型时不该放行全部上游报价，否则会把不属于本渠道
+// 服务范围的模型铺成"幽灵盘口"；历史幽灵行也应被清理分支清掉。
+func TestSyncQuotesForChannelWithoutDeclaredModelsWritesNoQuotes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.ChannelQuote{}))
+
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	model.DB, model.LOG_DB = db, db
+	t.Cleanup(func() { model.DB, model.LOG_DB = previousDB, previousLogDB })
+
+	channel := &model.Channel{
+		Type:   constant.ChannelTypeOpenAI,
+		Key:    "sk-price-sync-empty",
+		Name:   "empty-models",
+		Status: common.ChannelStatusEnabled,
+		Group:  "default",
+	}
+	require.NoError(t, db.Create(channel).Error)
+	// 上一次错误同步留下的幽灵行：修复后必须被清理
+	require.NoError(t, db.Create(&model.ChannelQuote{
+		ChannelId: channel.Id, PoolGroup: "default", ModelName: "stale-model",
+		InputPrice: 2, OutputPrice: 8, Source: model.QuoteSourceAuto, Status: model.QuoteStatusEnabled,
+	}).Error)
+
+	written, err := syncQuotesForChannel(channel, []channelQuoteDraft{
+		{ModelName: "upstream-only-model", InputPrice: 1, OutputPrice: 2},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, written, "渠道未声明模型时不得写入任何报价")
+
+	var remaining int64
+	require.NoError(t, db.Model(&model.ChannelQuote{}).Where("channel_id = ?", channel.Id).Count(&remaining).Error)
+	assert.Zero(t, remaining, "渠道当前不服务任何模型，幽灵盘口应被清理")
+
+	// 声明过模型的渠道仍按交集过滤：只有声明的模型能落盘
+	declared := &model.Channel{
+		Type:   constant.ChannelTypeOpenAI,
+		Key:    "sk-price-sync-declared",
+		Name:   "declared",
+		Status: common.ChannelStatusEnabled,
+		Group:  "default",
+		Models: "declared-model",
+	}
+	require.NoError(t, db.Create(declared).Error)
+	written, err = syncQuotesForChannel(declared, []channelQuoteDraft{
+		{ModelName: "declared-model", InputPrice: 1, OutputPrice: 2},
+		{ModelName: "not-declared", InputPrice: 3, OutputPrice: 4},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, written)
+
+	var quote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ?", declared.Id).First(&quote).Error)
+	assert.Equal(t, "declared-model", quote.ModelName)
+	assert.Equal(t, model.QuoteSourceAuto, quote.Source)
+}

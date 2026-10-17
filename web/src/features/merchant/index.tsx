@@ -58,6 +58,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { DEFAULT_CURRENCY_CONFIG, useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   createMerchantWithdrawal,
@@ -1328,6 +1329,12 @@ function rangeStartTimestamp(range: string): number | undefined {
 function MerchantLogsTab({ groups }: { groups: string[] }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const quotaPerUnit = useSystemConfigStore(
+    (s) =>
+      s.config?.currency?.quotaPerUnit && s.config.currency.quotaPerUnit > 0
+        ? s.config.currency.quotaPerUnit
+        : DEFAULT_CURRENCY_CONFIG.quotaPerUnit
+  )
   const PAGE_SIZE = 20
   const [page, setPage] = useState(1)
   const [group, setGroup] = useState('all')
@@ -1389,7 +1396,7 @@ function MerchantLogsTab({ groups }: { groups: string[] }) {
           <CardContent className='py-3'>
             <p className='text-muted-foreground text-xs'>{t('Spend')}</p>
             <p className='text-xl font-bold'>
-              {formatUsd((stats?.quota ?? 0) / 500000)}
+              {formatUsd((stats?.quota ?? 0) / quotaPerUnit)}
             </p>
           </CardContent>
         </Card>

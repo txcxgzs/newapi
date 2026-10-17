@@ -949,7 +949,13 @@ function QuoteBoardTab() {
             <span className='font-mono'>
               {formatCurrencyFromUSD(q.output_price, QUOTE_PRICE_FORMAT)}
             </span>
-            <span>{q.source === 'manual' ? t('Manual') : t('Auto')}</span>
+            <span>
+              {(() => {
+                if (q.source === 'derived') return t('Derived')
+                if (q.source === 'manual') return t('Manual')
+                return t('Auto')
+              })()}
+            </span>
             <span className='flex w-28 justify-end gap-1'>
               <Button
                 size='sm'

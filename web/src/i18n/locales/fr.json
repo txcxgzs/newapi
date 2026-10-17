@@ -7389,6 +7389,7 @@
     "Alipay / USDT / Bank card...": "Alipay / USDT / Carte bancaire...",
     "gpt-pro, gpt-plus": "gpt-pro, gpt-plus",
     "gpt-5.6, 2.5, 10\ngpt-6, 4, 32": "gpt-5.6, 2.5, 10\ngpt-6, 4, 32",
+    "gpt-5.6, pro\ngpt-6": "gpt-5.6, pro\ngpt-6",
     "Upstream type": "Upstream type",
     "Auto detect": "Auto detect",
     "OpenAI compatible": "OpenAI compatible",
@@ -7521,6 +7522,14 @@
     "Failed to adjust gift quota": "Échec de l'ajustement du crédit cadeau",
     "Current gift quota": "Crédit cadeau actuel",
     "Gift Balance": "Solde cadeau",
-    "Gift quota granted by administrators": "Crédit cadeau accordé par les administrateurs"
+    "Gift quota granted by administrators": "Crédit cadeau accordé par les administrateurs",
+    "Increase user gift quota": "Augmenter le crédit cadeau utilisateur",
+    "Decrease user gift quota": "Diminuer le crédit cadeau utilisateur",
+    "Override user gift quota": "Définir le crédit cadeau utilisateur",
+    "Adjust user gift quota": "Ajuster le crédit cadeau utilisateur",
+    "Increase gift quota for user “{{name}}”": "Augmenter le crédit cadeau de « {{name}} »",
+    "Decrease gift quota for user “{{name}}”": "Diminuer le crédit cadeau de « {{name}} »",
+    "Override gift quota for user “{{name}}”": "Définir le crédit cadeau de « {{name}} »",
+    "Adjust gift quota for user “{{name}}”": "Ajuster le crédit cadeau de « {{name}} »"
   }
 }

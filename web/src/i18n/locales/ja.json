@@ -7389,6 +7389,7 @@
     "Alipay / USDT / Bank card...": "Alipay / USDT / 銀行カード...",
     "gpt-pro, gpt-plus": "gpt-pro, gpt-plus",
     "gpt-5.6, 2.5, 10\ngpt-6, 4, 32": "gpt-5.6, 2.5, 10\ngpt-6, 4, 32",
+    "gpt-5.6, pro\ngpt-6": "gpt-5.6, pro\ngpt-6",
     "Upstream type": "Upstream type",
     "Auto detect": "Auto detect",
     "OpenAI compatible": "OpenAI compatible",
@@ -7521,6 +7522,14 @@
     "Failed to adjust gift quota": "ギフトクォータの調整に失敗しました",
     "Current gift quota": "現在のギフトクォータ",
     "Gift Balance": "ギフト残高",
-    "Gift quota granted by administrators": "管理者から付与されたギフトクォータ"
+    "Gift quota granted by administrators": "管理者から付与されたギフトクォータ",
+    "Increase user gift quota": "ユーザーのギフトクォータを増額",
+    "Decrease user gift quota": "ユーザーのギフトクォータを減額",
+    "Override user gift quota": "ユーザーのギフトクォータを上書き",
+    "Adjust user gift quota": "ユーザーのギフトクォータを調整",
+    "Increase gift quota for user “{{name}}”": "ユーザー「{{name}}」のギフトクォータを増額",
+    "Decrease gift quota for user “{{name}}”": "ユーザー「{{name}}」のギフトクォータを減額",
+    "Override gift quota for user “{{name}}”": "ユーザー「{{name}}」のギフトクォータを上書き",
+    "Adjust gift quota for user “{{name}}”": "ユーザー「{{name}}」のギフトクォータを調整"
   }
 }

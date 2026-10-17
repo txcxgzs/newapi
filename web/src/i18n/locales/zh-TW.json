@@ -7389,6 +7389,7 @@
     "Alipay / USDT / Bank card...": "支付寶 / USDT / 銀行卡...",
     "gpt-pro, gpt-plus": "gpt-pro, gpt-plus",
     "gpt-5.6, 2.5, 10\ngpt-6, 4, 32": "gpt-5.6, 2.5, 10\ngpt-6, 4, 32",
+    "gpt-5.6, pro\ngpt-6": "gpt-5.6, pro\ngpt-6",
     "Upstream type": "上游類型",
     "Auto detect": "自動偵測",
     "OpenAI compatible": "OpenAI 相容",
@@ -7521,6 +7522,14 @@
     "Failed to adjust gift quota": "調整贈金失敗",
     "Current gift quota": "當前贈金",
     "Gift Balance": "贈金餘額",
-    "Gift quota granted by administrators": "由管理員發放的贈金"
+    "Gift quota granted by administrators": "由管理員發放的贈金",
+    "Increase user gift quota": "增加使用者贈金",
+    "Decrease user gift quota": "減少使用者贈金",
+    "Override user gift quota": "覆蓋使用者贈金",
+    "Adjust user gift quota": "調整使用者贈金",
+    "Increase gift quota for user “{{name}}”": "增加使用者「{{name}}」的贈金",
+    "Decrease gift quota for user “{{name}}”": "減少使用者「{{name}}」的贈金",
+    "Override gift quota for user “{{name}}”": "覆蓋使用者「{{name}}」的贈金",
+    "Adjust gift quota for user “{{name}}”": "調整使用者「{{name}}」的贈金"
   }
 }

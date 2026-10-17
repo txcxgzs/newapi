@@ -71,8 +71,24 @@ func DecreaseGiftQuota(id int, quota int) error {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
-	return DB.Model(&User{}).Where("id = ?", id).
-		Update("gift_quota", gorm.Expr("gift_quota - ?", quota)).Error
+	result := DB.Model(&User{}).Where("id = ?", id).
+		Update("gift_quota", gorm.Expr("gift_quota - ?", quota))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	// MySQL 在数值未变化时也报告 0 行；先确认用户是否存在，
+	// 不存在必须暴露，否则扣费静默成功、账本与预扣记录对不上。
+	var count int64
+	if err := DB.Model(&User{}).Where("id = ?", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // AdjustUserGiftQuota applies a manual gift quota adjustment. It mirrors
