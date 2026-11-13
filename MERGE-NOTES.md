@@ -73,3 +73,51 @@
 - `go test ./model/ -run 'Merchant|Gift|Log'` → ok
 - `go test ./service/ -run 'Gift|Merchant'` → ok
 - `go test ./controller/ -run 'TestSecurityAccount|UserManage|UserUpdate|Quota'` → ok（63s，含全部赠金测试）
+
+## 2026-11-13 合并 upstream b20e056（落后 128 个提交）
+
+### 总原则
+
+本次起冲突优先采用上游结构与文案，魔改逻辑只做最小叠加（后续继续减债）。
+
+### 冲突 24 处（手动解决）
+
+| 文件 | 处理 |
+|---|---|
+| types/price_data.go | 采用上游字段集（含 CacheCreation12hRatio），追加 ChannelRate |
+| dto/channel_constraints.go | GiftBilling 与 TaskPluginRelayOnly 并存 |
+| controller/channel_authz.go | merchant_id 与 balance_detail 都纳入只读/清零 |
+| controller/relay.go | 保留商家分润块，接入上游 RecordImmediateTaskResult |
+| controller/system_task_handlers.go | 保留 priceSync/routingOptimizer/candleAgg，并注册上游 systemTaskCleanupHandler |
+| controller/user.go | 保留内存渠道缓存刷新，接入上游 BumpSyncTopic |
+| model/channel.go | 保留 InsertWithTx，采用上游 Update 注释 |
+| model/log.go | 保留 RecordConsumeLog 返回 logID，接入上游 SetContextKey(ContextKeyConsumeLog) |
+| model/system_task.go | 自定义任务类型 + 上游 channel_balance/system_task_cleanup 合并 |
+| relay/helper/price.go | 上游字段集 + ChannelRate |
+| relay/relay_task.go | 采用上游 tryRealtimeFetch（去掉 ctx 参数与本地 FinalizeTerminalTaskOnFetch 路径，终态交给轮询） |
+| service/quota.go | 保留赠金余额校验与文案，改用上游 (int,error) 签名 |
+| service/task_polling.go | 保留商家分润，接入上游 reportFinalTask/bulkFailedTasks |
+| service/channel_affinity_usage_cache_test.go | 全取上游（上游 #8009 已修复同类 flaky） |
+| THIRD-PARTY-LICENSES.md | 两段都保留（CuzTeam 归属 + moejs notices） |
+| web/package.json | 取上游依赖升级（vitest 5 / motion 13 / nanoid 6 等），保留 @visactor/vchart-extension、katex 0.18.2 精确钉、oxlint 1.74.0 精确钉 |
+| web/src/hooks/use-sidebar-view.ts | 合并两套 import，接入 useModelPricingIssueBadge |
+| web/src/hooks/__tests__/sidebar-config.test.tsx | 两套 describe 都保留 |
+| channel-configuration.test.tsx | 赠金测试 + 上游 passthrough 测试并存 |
+| channel-mutate-drawer.tsx | 保留赠金字段块，采用上游 modelFetchable |
+| web/src/routeTree.gen.ts | 两个新路由都保留（构建会重生成） |
+| web/src/i18n/locales/*.json（7 个） | 以上游为基底，补回我们缺失的 324 个键；同名键取上游文案，键排序 |
+
+### 编译/验证
+
+- 工具链升级：go.mod → 1.26.10（CVE-2026-111943），需 `GOTOOLCHAIN=go1.26.10`
+- `go build ./...` 通过；relaykit `GOWORK=off go build ./...` 通过
+- 全仓测试编译扫描 `go test ./... -run zzz_none_zzz` 通过
+- 三件套均 ok（controller 80s）
+- 前端 `npm install`（registry.npmmirror.com）+ `npm run build` 通过；`npx vitest run` 238 文件 2887/2890 通过
+  - 3 个失败在 `priority-order.test.tsx`（上游新增文件，与上游 diff 为零，Windows 环境问题，非本次合并引入）
+  - `npx oxlint` 1.74.0 下报上游文件 2 个 error + 若干 warning（配置与锁和上游一致，非本次引入）
+
+### 待办
+
+- [ ] 跟进 priority-order 测试在 Windows 的 3 个失败（上游同样失败）
+- [ ] 商家/赠金逻辑继续按上游重构减债
