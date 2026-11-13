@@ -12,13 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// affinityTestSeq 为通道亲和统计测试生成单调递增的隔离键，避免依赖
-// time.Now().UnixNano()：在粗粒度时钟上相邻调用可能返回相同值，
-// 导致不同用例共享同一缓存桶、互相污染断言。
-var affinityTestSeq int64
+var channelAffinityTestSeq atomic.Int64
 
-func affinityTestKey(prefix string) string {
-	return fmt.Sprintf("%s_%d", prefix, atomic.AddInt64(&affinityTestSeq, 1))
+func affinityTestKeys(t *testing.T) (string, string) {
+	t.Helper()
+	key := fmt.Sprintf("%s:%d", t.Name(), channelAffinityTestSeq.Add(1))
+	return key, key
 }
 
 func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string) *gin.Context {
@@ -35,9 +34,8 @@ func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string)
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName := affinityTestKey("rule")
+	ruleName, keyFP := affinityTestKeys(t)
 	usingGroup := "default"
-	keyFP := affinityTestKey("fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -62,9 +60,8 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName := affinityTestKey("rule")
+	ruleName, keyFP := affinityTestKeys(t)
 	usingGroup := "default"
-	keyFP := affinityTestKey("fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	openAIUsage := &dto.Usage{
@@ -92,9 +89,8 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName := affinityTestKey("rule")
+	ruleName, keyFP := affinityTestKeys(t)
 	usingGroup := "default"
-	keyFP := affinityTestKey("fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{

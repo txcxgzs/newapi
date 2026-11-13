@@ -89,6 +89,7 @@ var channelReadOnlyFields = map[string]struct{}{
 	"balance_updated_time": {},
 	"used_quota":           {},
 	"merchant_id":          {}, // New API Pro：由商家审核流程归属，普通编辑不可改
+	"balance_detail":       {},
 }
 
 func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]any) {
@@ -112,6 +113,9 @@ func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]an
 	}
 	if _, ok := requestData["merchant_id"]; ok {
 		channel.MerchantId = 0
+	}
+	if _, ok := requestData["balance_detail"]; ok {
+		channel.BalanceDetail = nil
 	}
 }
 

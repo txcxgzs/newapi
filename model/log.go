@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/types"
 
@@ -340,6 +341,9 @@ type RecordConsumeLogParams struct {
 // New API Pro 的商家分润在该 ID>0 时用它做幂等入账；ID=0 时分润仍会入账，
 // 幂等由请求级兜底键或无幂等接管（见 service.RecordMerchantEarningForConsume）。
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) int {
+	// Request plugin report hooks read what the request settled, whether or
+	// not consume logs are kept.
+	common.SetContextKey(c, constant.ContextKeyConsumeLog, &params)
 	if !common.LogConsumeEnabled {
 		return 0
 	}
@@ -390,17 +394,26 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		return 0
 	}
 	if common.DataExportEnabled {
+		var cacheReadTokens, cacheCreationTokens int
+		if other != nil {
+			cacheReadTokens, _ = other.public["cache_tokens"].(int)
+			// The settlement path already normalizes the cache creation total.
+			// Do not add the 5m/1h breakdown again or infer tokens from prices.
+			cacheCreationTokens, _ = other.public["cache_write_tokens"].(int)
+		}
 		LogQuotaData(QuotaDataLogParams{
-			UserID:    userId,
-			Username:  username,
-			ModelName: params.ModelName,
-			Quota:     params.Quota,
-			CreatedAt: createdAt,
-			TokenUsed: params.PromptTokens + params.CompletionTokens,
-			UseGroup:  params.Group,
-			TokenID:   params.TokenId,
-			ChannelID: params.ChannelId,
-			NodeName:  common.NodeName,
+			UserID:              userId,
+			Username:            username,
+			ModelName:           params.ModelName,
+			Quota:               params.Quota,
+			CreatedAt:           createdAt,
+			TokenUsed:           params.PromptTokens + params.CompletionTokens,
+			CacheReadTokens:     int64(cacheReadTokens),
+			CacheCreationTokens: int64(cacheCreationTokens),
+			UseGroup:            params.Group,
+			TokenID:             params.TokenId,
+			ChannelID:           params.ChannelId,
+			NodeName:            common.NodeName,
 		})
 	}
 	return log.Id

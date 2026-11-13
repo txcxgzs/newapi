@@ -37,6 +37,7 @@ type ChannelFilterKind string
 
 const (
 	FilterRequestPath        ChannelFilterKind = "request_path"
+	FilterTaskPluginEndpoint ChannelFilterKind = "task_plugin_endpoint"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
 	FilterGiftBilling        ChannelFilterKind = "gift_billing"
@@ -51,6 +52,9 @@ type ChannelFilter struct {
 	// GiftBilling 赠金计费隔离：true 只允许赠金渠道，false 只允许非赠金渠道。
 	// nil 表示不限制。请求预扣建立计费会话后登记，防止重试跨计费来源切换渠道。
 	GiftBilling *bool
+	// TaskPluginRelayOnly excludes endpoint candidates after an ordinary relay
+	// channel wins selection, so retries keep using the same protocol handler.
+	TaskPluginRelayOnly bool
 }
 
 type ChannelConstraints struct {
