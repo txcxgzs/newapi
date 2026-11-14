@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,9 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,6 +45,11 @@ func setupMerchantControllerTestDB(t *testing.T) *gorm.DB {
 	model.DB, model.LOG_DB = db, db
 	common.RedisEnabled = false
 	common.SetDatabaseTypes(databaseTypes[dialect], databaseTypes[dialect])
+	prevMaster := common.IsMasterNode
+	common.IsMasterNode = false
+	t.Setenv("LOG_SQL_DSN", "")
+	require.NoError(t, model.InitLogDB())
+	common.IsMasterNode = prevMaster
 
 	t.Cleanup(func() {
 		model.DB, model.LOG_DB = previousDB, previousLogDB
@@ -50,6 +58,8 @@ func setupMerchantControllerTestDB(t *testing.T) *gorm.DB {
 	})
 	require.NoError(t, db.AutoMigrate(
 		&model.User{},
+		&model.Option{},
+		&model.SystemTask{},
 		&model.Channel{},
 		&model.Ability{},
 		&model.ChannelQuote{},
@@ -250,4 +260,155 @@ func TestPostMerchantApplicationRejectsOverLimitRateMultiplier(t *testing.T) {
 	var apps int64
 	require.NoError(t, db.Model(&model.MerchantApplication{}).Count(&apps).Error)
 	assert.Zero(t, apps, "倍率校验失败时不得落库申请")
+}
+
+func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
+	db := setupMerchantControllerTestDB(t)
+
+	prevFetch := *system_setting.GetFetchSetting()
+	prevGroupRatio := ratio_setting.GroupRatio2JSONString()
+	prevUsableGroups := setting.UserUsableGroups2JSONString()
+	prevAutoGroups := setting.AutoGroups2JsonString()
+	prevModelRatio := ratio_setting.ModelRatio2JSONString()
+	prevCompletionRatio := ratio_setting.CompletionRatio2JSONString()
+
+	t.Cleanup(func() {
+		*system_setting.GetFetchSetting() = prevFetch
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(prevGroupRatio))
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(prevUsableGroups))
+		require.NoError(t, setting.UpdateAutoGroupsByJsonString(prevAutoGroups))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(prevModelRatio))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(prevCompletionRatio))
+	})
+
+	fetchSetting := system_setting.GetFetchSetting()
+	fetchSetting.EnableSSRFProtection = false
+	fetchSetting.AllowPrivateIp = true
+
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1.0}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"default"}`))
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["default"]`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"gpt-5.6":2.5}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"gpt-5.6":4.0}`))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-5.6"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	require.NoError(t, db.Create(&model.User{
+		Id:       201,
+		Username: "merchant_alpha_201",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}).Error)
+
+	t.Run("rejects reserved group default", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Set("id", 201)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/apply", strings.NewReader(
+			`{"site_name":"Alpha","site_url":"`+upstream.URL+`","site_key":"sk-alpha","group_name":"default","rate_multiplier":0.5,"models":[{"model":"gpt-5.6"}]}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		PostMerchantApplication(c)
+
+		assert.Equal(t, http.StatusBadRequest, recorder.Code)
+
+		var apps int64
+		require.NoError(t, db.Model(&model.MerchantApplication{}).Where("user_id = ?", 201).Count(&apps).Error)
+		assert.Zero(t, apps)
+	})
+
+	// 1. 商家提交带专属分组与加入 auto 路由意向的入驻申请
+	applyRecorder := httptest.NewRecorder()
+	applyCtx, _ := gin.CreateTestContext(applyRecorder)
+	applyCtx.Set("id", 201)
+	applyCtx.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/apply", strings.NewReader(
+		`{"site_name":"Alpha","site_url":"`+upstream.URL+`","site_key":"sk-alpha","group_name":"alpha-vip","group_desc":"Alpha VIP Pool","rate_multiplier":0.5,"join_auto_group":true,"models":[{"model":"gpt-5.6"}]}`))
+	applyCtx.Request.Header.Set("Content-Type", "application/json")
+	PostMerchantApplication(applyCtx)
+	require.Equal(t, http.StatusOK, applyRecorder.Code, applyRecorder.Body.String())
+
+	var app model.MerchantApplication
+	require.NoError(t, db.Where("user_id = ? AND status = ?", 201, model.MerchantApplicationPending).First(&app).Error)
+	assert.Equal(t, model.MerchantAppTypeChannel, app.AppType)
+	assert.Equal(t, "alpha-vip", app.GroupName)
+	assert.Equal(t, "Alpha VIP Pool", app.GroupDesc)
+	assert.True(t, app.JoinAutoGroup)
+
+	// 2. 管理员审核通过：应同步原生 GroupRatio / UserUsableGroups / AutoGroups 并按分组倍率派生盘口
+	reviewRecorder := performReviewRequest(t, app.Id, `{"action":"approve","review_note":"ok","pools":["alpha-vip"],"group_name":"alpha-vip","group_desc":"Alpha VIP Pool","join_auto_group":true,"rate_multiplier":0.5,"profit_ratio":0.95}`)
+	require.Equal(t, http.StatusOK, reviewRecorder.Code, reviewRecorder.Body.String())
+
+	var reviewResp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			ChannelId int    `json:"channel_id"`
+			AppType   string `json:"app_type"`
+			GroupName string `json:"group_name"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(reviewRecorder.Body.Bytes(), &reviewResp))
+	assert.True(t, reviewResp.Success, reviewRecorder.Body.String())
+
+	assert.True(t, ratio_setting.ContainsGroupRatio("alpha-vip"))
+	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio("alpha-vip"), 1e-9)
+	assert.Equal(t, "Alpha VIP Pool", setting.GetUserUsableGroupsCopy()["alpha-vip"])
+	assert.True(t, setting.ContainsAutoGroup("alpha-vip"))
+
+	var channel model.Channel
+	require.NoError(t, db.First(&channel, reviewResp.Data.ChannelId).Error)
+	assert.Equal(t, "alpha-vip", channel.Group)
+
+	var quote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, "alpha-vip", "gpt-5.6").First(&quote).Error)
+	assert.InDelta(t, 1.25, quote.RateMultiplier, 1e-9)
+	assert.InDelta(t, 2.5, quote.InputPrice, 1e-9)
+	assert.InDelta(t, 10.0, quote.OutputPrice, 1e-9)
+
+	// 3. 商家提交分组倍率 / Auto 路由变更申请（未审核前不得直接生效）
+	rateRecorder := httptest.NewRecorder()
+	rateCtx, _ := gin.CreateTestContext(rateRecorder)
+	rateCtx.Set("id", 201)
+	rateCtx.Request = httptest.NewRequest(http.MethodPut, "/api/merchant/portal/rate", strings.NewReader(
+		`{"group_name":"alpha-vip","group_desc":"Alpha Updated","rate_multiplier":0.8,"join_auto_group":false}`))
+	rateCtx.Request.Header.Set("Content-Type", "application/json")
+	UpdateMerchantPortalRate(rateCtx)
+	require.Equal(t, http.StatusOK, rateRecorder.Code, rateRecorder.Body.String())
+
+	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio("alpha-vip"), 1e-9)
+	assert.True(t, setting.ContainsAutoGroup("alpha-vip"))
+
+	var changeApp model.MerchantApplication
+	require.NoError(t, db.Where("user_id = ? AND app_type = ? AND status = ?", 201, model.MerchantAppTypeGroupChange, model.MerchantApplicationPending).First(&changeApp).Error)
+	assert.Equal(t, "alpha-vip", changeApp.GroupName)
+	assert.InDelta(t, 0.8, changeApp.RateMultiplier, 1e-9)
+	assert.False(t, changeApp.JoinAutoGroup)
+
+	// 4. 管理员审核通过 group_change：更新原生配置、退出 AutoGroups 并重算派生盘口
+	changeReviewRecorder := performReviewRequest(t, changeApp.Id, `{"action":"approve","review_note":"ok","rate_multiplier":0.8,"group_desc":"Alpha Updated","join_auto_group":false}`)
+	require.Equal(t, http.StatusOK, changeReviewRecorder.Code, changeReviewRecorder.Body.String())
+
+	var changeReviewResp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(changeReviewRecorder.Body.Bytes(), &changeReviewResp))
+	assert.True(t, changeReviewResp.Success, changeReviewRecorder.Body.String())
+
+	assert.InDelta(t, 0.8, ratio_setting.GetGroupRatio("alpha-vip"), 1e-9)
+	assert.Equal(t, "Alpha Updated", setting.GetUserUsableGroupsCopy()["alpha-vip"])
+	assert.False(t, setting.ContainsAutoGroup("alpha-vip"))
+
+	var updatedQuote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, "alpha-vip", "gpt-5.6").First(&updatedQuote).Error)
+	assert.InDelta(t, 2.0, updatedQuote.RateMultiplier, 1e-9)
+	assert.InDelta(t, 4.0, updatedQuote.InputPrice, 1e-9)
+	assert.InDelta(t, 16.0, updatedQuote.OutputPrice, 1e-9)
 }

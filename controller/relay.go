@@ -359,9 +359,6 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	if newAPIError != nil {
 		return nil, newAPIError
 	}
-	// 重试换渠道：把价格与 tiered 预估重估到实际命中的渠道，
-	// 客户扣费与该渠道商家的分润都按其挂牌倍率结算（预扣差额由结算多退少补）。
-	helper.ApplyChannelRate(info, channel.Id)
 	return channel, nil
 }
 

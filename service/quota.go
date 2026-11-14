@@ -112,8 +112,6 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
 	groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	modelRatio, _, _ := ratio_setting.GetModelRatio(modelName)
-	// 渠道费率乘数：WSS 会话中途预扣与初始 PriceData 口径保持一致
-	modelRatio *= model.GetChannelRateMultiplierById(relayInfo.GetChannelID())
 
 	autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
 	if exists {

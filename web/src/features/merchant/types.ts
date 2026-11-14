@@ -43,15 +43,21 @@ export type UpstreamKind =
   | 'openai'
   | 'openai_models_pricing'
 
+export type MerchantAppType = 'channel' | 'group_change'
+
 export interface MerchantApplication {
   id: number
   user_id: number
+  app_type?: MerchantAppType
   site_name: string
   site_url: string
   site_key: string
   models: string
   upstream_kind: UpstreamKind
-  /** 渠道倍率（相对平台标准价的折扣系数，0.1 = 一折）。 */
+  group_name?: string
+  group_desc?: string
+  join_auto_group?: boolean
+  /** 分组倍率（原生 GroupRatio，相对平台标准价的折扣系数，0.5 = 五折）。 */
   rate_multiplier: number
   status: number // 0 pending 1 approved 2 rejected
   review_note: string
@@ -104,6 +110,10 @@ export interface MerchantUpstreamProbeResult {
 
 /** POST /api/merchant_manage/applications/:id/review 的审核结果。 */
 export interface MerchantReviewResult {
+  app_type?: MerchantAppType
+  group_name?: string
+  rate_multiplier?: number
+  join_auto_group?: boolean
   channel_id: number
   channel_type: number
   price_sync: boolean
@@ -293,9 +303,21 @@ export interface MerchantPoolChannel {
   avg_use_time: number
 }
 
+/** 单个号池（分组）的倍率、描述、Auto 路由状态与商家专属标识。 */
+export interface MerchantPoolMeta {
+  group_ratio: number
+  group_desc: string
+  in_auto_group: boolean
+  is_merchant_group: boolean
+}
+
 /** 商家在某个分组（号池）下的渠道聚合。 */
 export interface MerchantPoolGroup {
   pool: string
+  group_ratio?: number
+  group_desc?: string
+  in_auto_group?: boolean
+  is_merchant_group?: boolean
   channels: MerchantPoolChannel[]
   calls_24h: number
   quota_usd_24h: number
@@ -306,6 +328,8 @@ export interface MerchantPoolGroup {
 export interface MerchantPortalPools {
   all_pools: string[]
   groups: MerchantPoolGroup[]
+  pool_meta?: Record<string, MerchantPoolMeta>
+  pending_application?: MerchantApplication | null
 }
 
 export interface MerchantRow extends MerchantProfile {

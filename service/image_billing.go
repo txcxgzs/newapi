@@ -39,12 +39,7 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		if runErr != nil {
 			return types.NewErrorWithStatusCode(runErr, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		// 与 quotaConversion 同口径：快照渠道倍率参与重估（旧快照 <=0 按 1）
-		channelRate := snap.ChannelRate
-		if channelRate <= 0 {
-			channelRate = 1
-		}
-		beforeGroup := cost / 1_000_000 * snap.QuotaPerUnit * channelRate
+		beforeGroup := cost / 1_000_000 * snap.QuotaPerUnit
 		if trace.BillingUnit != billingexpr.BillingUnitRequest && snap.PreConsumeMultiplier != 0 {
 			beforeGroup *= snap.PreConsumeMultiplier
 		}

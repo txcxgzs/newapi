@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -53,6 +54,7 @@ import {
 } from './upstream-kinds'
 
 interface MerchantApplyFormProps {
+  defaultGroupName?: string
   onSubmitted: () => void
 }
 
@@ -97,18 +99,23 @@ function parseModels(raw: string): ParsedModels {
  * 模型清单；商家把每个上游模型对接到平台官方模型名，未对接的不上架。
  * 手填清单只作为拉取失败时的兜底。
  */
-export function MerchantApplyForm({ onSubmitted }: MerchantApplyFormProps) {
+export function MerchantApplyForm({
+  defaultGroupName,
+  onSubmitted,
+}: MerchantApplyFormProps) {
   const { t } = useTranslation()
   const [siteName, setSiteName] = useState('')
   const [siteUrl, setSiteUrl] = useState('')
   const [siteKey, setSiteKey] = useState('')
   const [upstreamKind, setUpstreamKind] = useState<string>(UPSTREAM_KIND_AUTO)
+  const [groupName, setGroupName] = useState(defaultGroupName ?? '')
+  const [groupDesc, setGroupDesc] = useState('')
+  const [groupRate, setGroupRate] = useState('1')
+  const [joinAutoGroup, setJoinAutoGroup] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [probing, setProbing] = useState(false)
   const [probeResult, setProbeResult] =
     useState<MerchantUpstreamProbeResult | null>(null)
-  // 兜底折扣倍率：仅当检测确认上游无法自动获取时才展示，留空按 1.0（平台标准价）
-  const [fallbackRate, setFallbackRate] = useState('')
   // 模型对接：上游模型名 → 平台官方模型名；缺省（未动过）时同名自动对接
   const [upstreamModels, setUpstreamModels] = useState<string[]>([])
   const [mapping, setMapping] = useState<Record<string, string>>({})
@@ -190,19 +197,26 @@ export function MerchantApplyForm({ onSubmitted }: MerchantApplyFormProps) {
       )
       return
     }
+    const trimmedRate = groupRate.trim()
+    if (trimmedRate !== '') {
+      const rateNum = Number(trimmedRate)
+      if (!Number.isFinite(rateNum) || rateNum <= 0 || rateNum > 100) {
+        toast.error(t('分组倍率需在 0（不含）到 100 之间'))
+        return
+      }
+    }
+
     setSubmitting(true)
     try {
-      // 倍率默认交给自动同步：只有兜底输入有值时才提交折扣倍率
-      const trimmed = fallbackRate.trim()
       await submitMerchantApplication({
         site_name: siteName,
         site_url: siteUrl,
         site_key: siteKey,
         upstream_kind: toUpstreamKind(upstreamKind),
-        rate_multiplier:
-          probeResult && !probeResult.price_fetch_ok && trimmed !== ''
-            ? Number(trimmed)
-            : undefined,
+        group_name: groupName.trim() || undefined,
+        group_desc: groupDesc.trim() || undefined,
+        join_auto_group: joinAutoGroup,
+        rate_multiplier: trimmedRate !== '' ? Number(trimmedRate) : undefined,
         models: parsed.models,
       })
       toast.success(t('Application submitted, waiting for review'))
@@ -252,6 +266,75 @@ export function MerchantApplyForm({ onSubmitted }: MerchantApplyFormProps) {
           placeholder={t('sk-...')}
         />
       </div>
+
+      <div className='bg-muted/30 space-y-3 rounded-lg border p-3'>
+        <div className='text-sm font-medium'>
+          {t('专属分组与路由设置（提交后需管理员审核）')}
+        </div>
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <div className='space-y-1.5'>
+            <Label htmlFor='merchant-group-name'>{t('专属分组名称')}</Label>
+            <Input
+              id='merchant-group-name'
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder='my-shop-vip'
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                '仅限字母、数字、连字符（-）与下划线（_），不可使用 default/vip/svip/auto 等系统保留分组；留空则由管理员审核时分配。'
+              )}
+            </p>
+          </div>
+          <div className='space-y-1.5'>
+            <Label htmlFor='merchant-group-rate'>
+              {t('分组倍率（GroupRatio）')}
+            </Label>
+            <Input
+              id='merchant-group-rate'
+              type='number'
+              step='0.01'
+              min='0.01'
+              max='100'
+              value={groupRate}
+              onChange={(e) => setGroupRate(e.target.value)}
+              placeholder='1'
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                '1.0 = 平台标准价，0.5 = 五折；计费按原生「模型倍率 × 分组倍率」结算。'
+              )}
+            </p>
+          </div>
+        </div>
+        <div className='space-y-1.5'>
+          <Label htmlFor='merchant-group-desc'>{t('分组说明')}</Label>
+          <Input
+            id='merchant-group-desc'
+            value={groupDesc}
+            onChange={(e) => setGroupDesc(e.target.value)}
+            placeholder={t('向终端用户展示在分组选择器中的说明')}
+          />
+        </div>
+        <div className='flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2'>
+          <div className='space-y-0.5'>
+            <Label htmlFor='merchant-join-auto-group'>
+              {t('加入平台 Auto 自动路由')}
+            </Label>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                '开启后，管理员审核通过时将该专属分组加入平台 auto 自动路由候选链。'
+              )}
+            </p>
+          </div>
+          <Switch
+            id='merchant-join-auto-group'
+            checked={joinAutoGroup}
+            onCheckedChange={setJoinAutoGroup}
+          />
+        </div>
+      </div>
+
       <div className='space-y-1.5'>
         <Label htmlFor='merchant-upstream-kind'>{t('Upstream type')}</Label>
         <Select
@@ -381,28 +464,6 @@ export function MerchantApplyForm({ onSubmitted }: MerchantApplyFormProps) {
               </p>
             </AlertDescription>
           </Alert>
-        )}
-
-        {/* 兜底：只有确认无法自动获取时才出现手填折扣的入口 */}
-        {probeResult && !probeResult.price_fetch_ok && (
-          <div className='space-y-1.5'>
-            <Label htmlFor='merchant-rate-multiplier'>
-              {t('Optional discount rate (fallback)')}
-            </Label>
-            <Input
-              id='merchant-rate-multiplier'
-              type='number'
-              step='0.0001'
-              value={fallbackRate}
-              onChange={(e) => setFallbackRate(e.target.value)}
-              placeholder='1'
-            />
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Discount factor relative to the platform standard price: 0.1 means 10% of it.'
-              )}
-            </p>
-          </div>
         )}
       </div>
 

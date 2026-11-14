@@ -25,7 +25,6 @@ type PriceData struct {
 	FreeModel             bool
 	ModelPrice            float64
 	ModelRatio            float64
-	ChannelRate           float64 // 渠道费率乘数：已乘进 ModelRatio/ModelPrice 的商家渠道倍率，重试换渠道时按它做重估基准（0 视为 1）
 	CompletionRatio       float64
 	CacheRatio            float64
 	CacheCreationRatio    float64

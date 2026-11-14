@@ -408,8 +408,6 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	if !hasRatioSetting || modelRatio <= 0 {
 		return false
 	}
-	// 渠道费率乘数：与任务预扣口径一致地参与重算
-	modelRatio *= model.GetChannelRateMultiplierById(task.ChannelId)
 
 	// 获取用户和组的倍率信息
 	group := task.Group

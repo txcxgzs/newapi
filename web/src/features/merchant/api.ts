@@ -63,6 +63,9 @@ export async function submitMerchantApplication(body: {
   site_url: string
   site_key: string
   upstream_kind?: UpstreamKind
+  group_name?: string
+  group_desc?: string
+  join_auto_group?: boolean
   rate_multiplier?: number
   models: MerchantModelQuote[]
 }): Promise<MerchantApplication> {
@@ -146,11 +149,14 @@ export async function getMerchantLogs(
   )
 }
 
-/** 调整商家自己渠道的倍率（仅对未开启自动同步的渠道有意义）。 */
+/** 提交商家专属分组倍率 / 描述 / Auto 自动路由变更申请（需管理员审核）。 */
 export async function updateMerchantRate(body: {
-  channel_id: number
+  group_name?: string
+  channel_id?: number
   rate_multiplier: number
-}): Promise<{ channel_id: number; rate_multiplier: number }> {
+  group_desc?: string
+  join_auto_group?: boolean
+}): Promise<MerchantApplication> {
   return unwrap(await api.put('/api/merchant/portal/rate', body))
 }
 
@@ -235,6 +241,9 @@ export async function reviewMerchantApplication(
     action: 'approve' | 'reject'
     review_note?: string
     pools?: string[]
+    group_name?: string
+    group_desc?: string
+    join_auto_group?: boolean
     profit_ratio?: number
     upstream_kind?: UpstreamKind
     channel_type?: number

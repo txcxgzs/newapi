@@ -109,11 +109,11 @@ func splitQuoteList(raw string) []string {
 	return items
 }
 
-// BuildDerivedQuotes 依据平台标准倍率与渠道倍率，派生该渠道在全部(号池,模型)上的盘口。
+// BuildDerivedQuotes 依据平台标准倍率与所属分组倍率，派生该渠道在全部(分组,模型)上的盘口。
 //
 // 计算方式：
 //
-//	有效倍率 = 平台模型倍率 × 渠道倍率
+//	有效倍率 = 平台模型倍率 × 分组倍率（GroupRatio）
 //	输入单价 = 有效倍率 × QuoteRatioBase
 //	输出单价 = 有效倍率 × 补全倍率 × QuoteRatioBase
 //
@@ -124,10 +124,13 @@ func BuildDerivedQuotes(channel *Channel) []ChannelQuote {
 	if len(pools) == 0 || len(models) == 0 {
 		return nil
 	}
-	rate := channel.GetRateMultiplier()
 	now := time.Now().Unix()
 	rows := make([]ChannelQuote, 0, len(pools)*len(models))
 	for _, pool := range pools {
+		groupRatio := ratio_setting.GetGroupRatio(pool)
+		if groupRatio <= 0 {
+			groupRatio = 1
+		}
 		for _, name := range models {
 			modelRatio, ok, _ := ratio_setting.GetModelRatio(name)
 			if !ok || modelRatio <= 0 {
@@ -137,7 +140,7 @@ func BuildDerivedQuotes(channel *Channel) []ChannelQuote {
 			if completion <= 0 {
 				completion = 1
 			}
-			effective := modelRatio * rate
+			effective := modelRatio * groupRatio
 			rows = append(rows, ChannelQuote{
 				ChannelId:      channel.Id,
 				PoolGroup:      pool,

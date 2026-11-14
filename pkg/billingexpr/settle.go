@@ -10,17 +10,12 @@ import (
 // expression version. This is the central dispatch point for future versions
 // that may use a different conversion formula.
 func quotaConversion(exprOutput float64, snap *BillingSnapshot) float64 {
-	// 渠道费率乘数与预扣口径保持一致地参与换算；零值来自旧快照，按 1（原价）处理。
-	channelRate := snap.ChannelRate
-	if channelRate <= 0 {
-		channelRate = 1
-	}
 	if snap.TaskUsageBilling {
-		return exprOutput * snap.QuotaPerUnit * channelRate
+		return exprOutput * snap.QuotaPerUnit
 	}
 	switch snap.ExprVersion {
 	default: // v1: coefficients are $/1M tokens prices
-		return exprOutput / 1_000_000 * snap.QuotaPerUnit * channelRate
+		return exprOutput / 1_000_000 * snap.QuotaPerUnit
 	}
 }
 

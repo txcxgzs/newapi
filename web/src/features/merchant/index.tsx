@@ -30,6 +30,7 @@ import {
 } from 'recharts'
 
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -49,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toIntlLocale } from '@/i18n/languages'
 import { api } from '@/lib/api'
@@ -75,8 +77,10 @@ import {
 import { MerchantApplyForm } from './apply-form'
 import { ChannelEditDialog } from './components/channel-edit-dialog'
 import type {
+  MerchantApplication,
   MerchantPoolChannel,
   MerchantPoolGroup,
+  MerchantPoolMeta,
 } from './types'
 
 /** 门户金额按系统货币展示，保留 4 位小数。 */
@@ -339,6 +343,14 @@ function MerchantPortal() {
  * 第一层用卡片网格展示平台全部分组（含尚未接入的）；点击进入第二层查看该分组
  * 下自己的池子（渠道），第二层顶部可新增渠道。倍率调整在池子卡片内完成。
  */
+function formatPendingAppDescription(app: MerchantApplication): string {
+  const kind = app.app_type === 'group_change' ? '分组倍率 / 路由变更' : '新渠道 / 专属分组接入'
+  const groupPart = app.group_name ? `，目标分组 ${app.group_name}` : ''
+  const autoPart = app.join_auto_group ? '，申请加入 Auto 路由' : ''
+  return `${kind}${groupPart}，申请倍率 ×${app.rate_multiplier || 1}${autoPart}`
+}
+
+/** 商家门户：汇总卡、分组市场/池子（二层钻取）、盘口与分润流水。 */
 function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -352,6 +364,8 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
 
   const allPools = poolsQuery.data?.all_pools ?? []
   const groups = poolsQuery.data?.groups ?? []
+  const poolMeta = poolsQuery.data?.pool_meta ?? {}
+  const pendingApp = poolsQuery.data?.pending_application ?? null
   const groupByPool = new Map(groups.map((group) => [group.pool, group]))
 
   /** 扩容申请提交成功后关闭表单并刷新门户数据。 */
@@ -365,6 +379,7 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
       <PoolGroupDetail
         pool={selectedPool}
         group={groupByPool.get(selectedPool)}
+        meta={poolMeta[selectedPool]}
         locale={locale}
         onBack={() => setSelectedPool(null)}
         onAddChannel={() => setAdding(true)}
@@ -385,11 +400,39 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
   }
 
   return (
-    <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
-      {allPools.map((pool) => {
-        const group = groupByPool.get(pool)
-        const joined = group?.channels.length ?? 0
-        const hasCalls = (group?.calls_24h ?? 0) > 0
+    <div className='space-y-4'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <p className='text-muted-foreground text-xs'>
+          {t('价格由所属分组的原生 GroupRatio 决定；创建专属分组或修改分组倍率 / Auto 路由均需管理员审核。')}
+        </p>
+        <Button size='sm' onClick={() => setAdding(true)}>
+          {t('新建专属分组 / 接入新渠道')}
+        </Button>
+      </div>
+
+      {pendingApp && (
+        <Alert>
+          <AlertTitle>{t('待管理员审核')}</AlertTitle>
+          <AlertDescription>
+            {formatPendingAppDescription(pendingApp)}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
+        {allPools.map((pool) => {
+          const group = groupByPool.get(pool)
+          const meta = poolMeta[pool]
+          const groupRatio = meta?.group_ratio ?? group?.group_ratio ?? 1
+          const inAutoGroup = Boolean(
+            meta?.in_auto_group ?? group?.in_auto_group
+          )
+          const isMerchantGroup = Boolean(
+            meta?.is_merchant_group ?? group?.is_merchant_group
+          )
+          const groupDesc = meta?.group_desc ?? group?.group_desc ?? ''
+          const joined = group?.channels.length ?? 0
+          const hasCalls = (group?.calls_24h ?? 0) > 0
         return (
           // 分组卡片是进入第二层的唯一入口：用真实按钮语义 + 明显的视觉暗示
           // （描边高亮、chevron、底部「点击查看」提示），并保持键盘可达。
@@ -415,6 +458,9 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
               <div className='flex items-center justify-between gap-2'>
                 <span className='truncate font-mono font-medium'>{pool}</span>
                 <div className='flex shrink-0 items-center gap-1.5'>
+                  <Badge variant='outline'>
+                    {`×${groupRatio.toFixed(2)}`}
+                  </Badge>
                   <Badge variant={joined > 0 ? 'default' : 'secondary'}>
                     {t('{{count}} channels', { count: joined })}
                   </Badge>
@@ -424,6 +470,21 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
                   />
                 </div>
               </div>
+              {(isMerchantGroup || inAutoGroup || groupDesc) && (
+                <div className='flex flex-wrap items-center gap-1.5 text-xs'>
+                  {isMerchantGroup && (
+                    <Badge variant='secondary'>{t('我的专属分组')}</Badge>
+                  )}
+                  {inAutoGroup && (
+                    <Badge variant='secondary'>{t('Auto 路由')}</Badge>
+                  )}
+                  {groupDesc && (
+                    <span className='text-muted-foreground truncate'>
+                      {groupDesc}
+                    </span>
+                  )}
+                </div>
+              )}
               <div className='text-muted-foreground grid grid-cols-3 gap-2 text-xs'>
                 <div>
                   <p>{t('24h Calls')}</p>
@@ -458,6 +519,21 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
           {t('No pools available yet')}
         </div>
       )}
+      </div>
+
+      <Dialog open={adding} onOpenChange={(open) => !open && setAdding(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('新建专属分组 / 接入新渠道')}</DialogTitle>
+            <DialogDescription>
+              {t(
+                '提交新分组与渠道申请，管理员审核通过后自动同步至分组倍率与可选 Auto 路由。'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <MerchantApplyForm onSubmitted={handleAdded} />
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -466,6 +542,7 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
 function PoolGroupDetail({
   pool,
   group,
+  meta,
   locale,
   onBack,
   onAddChannel,
@@ -476,6 +553,7 @@ function PoolGroupDetail({
 }: {
   pool: string
   group: MerchantPoolGroup | undefined
+  meta: MerchantPoolMeta | undefined
   locale: string | undefined
   onBack: () => void
   onAddChannel: () => void
@@ -485,23 +563,50 @@ function PoolGroupDetail({
   onChanged: () => void
 }) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [editingGroup, setEditingGroup] = useState(false)
   const channels = group?.channels ?? []
+  const groupRatio = meta?.group_ratio ?? group?.group_ratio ?? 1
+  const inAutoGroup = Boolean(meta?.in_auto_group ?? group?.in_auto_group)
+  const isMerchantGroup = Boolean(
+    meta?.is_merchant_group ?? group?.is_merchant_group
+  )
+  const groupDesc = meta?.group_desc ?? group?.group_desc ?? ''
 
   return (
     <div className='space-y-3'>
-      <div className='flex items-center justify-between gap-2'>
-        <div className='flex items-center gap-2'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
           <Button variant='outline' size='sm' onClick={onBack}>
             {t('Back')}
           </Button>
           <span className='font-mono text-lg font-medium'>{pool}</span>
+          <Badge variant='outline'>{`×${groupRatio.toFixed(2)}`}</Badge>
+          {inAutoGroup && <Badge variant='secondary'>{t('Auto 路由')}</Badge>}
+          {isMerchantGroup && (
+            <Badge variant='secondary'>{t('我的专属分组')}</Badge>
+          )}
           <Badge variant='secondary'>
             {t('{{count}} channels', { count: channels.length })}
           </Badge>
+          {groupDesc && (
+            <span className='text-muted-foreground text-xs'>{groupDesc}</span>
+          )}
         </div>
-        <Button size='sm' onClick={onAddChannel}>
-          {t('Add Channel')}
-        </Button>
+        <div className='flex items-center gap-2'>
+          {isMerchantGroup && (
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => setEditingGroup(true)}
+            >
+              {t('申请调整分组倍率 / Auto 路由')}
+            </Button>
+          )}
+          <Button size='sm' onClick={onAddChannel}>
+            {t('Add Channel')}
+          </Button>
+        </div>
       </div>
 
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
@@ -531,7 +636,36 @@ function PoolGroupDetail({
             </DialogDescription>
           </DialogHeader>
           {/* 复用入驻表单：后端把商家的再次提交当作扩容申请走审核 */}
-          <MerchantApplyForm onSubmitted={onAdded} />
+          <MerchantApplyForm
+            defaultGroupName={isMerchantGroup ? pool : undefined}
+            onSubmitted={onAdded}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editingGroup} onOpenChange={setEditingGroup}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t('申请调整分组倍率 / Auto 路由')}: {pool}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                '调整专属分组倍率或 Auto 路由开关会提交管理员审核，审核通过后生效并重算该分组盘口。'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <GroupRateEditForm
+            pool={pool}
+            groupRatio={groupRatio}
+            groupDesc={groupDesc}
+            inAutoGroup={inAutoGroup}
+            onSaved={() => {
+              setEditingGroup(false)
+              queryClient.invalidateQueries({ queryKey: ['merchant', 'pools'] })
+              onChanged()
+            }}
+          />
         </DialogContent>
       </Dialog>
     </div>
@@ -550,7 +684,6 @@ function ChannelCard({
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [editing, setEditing] = useState(false)
   const [editChannel, setEditChannel] = useState<MerchantPoolChannel | null>(null)
   const [syncing, setSyncing] = useState(false)
   const hasCalls = channel.calls_24h > 0
@@ -667,29 +800,19 @@ function ChannelCard({
             </p>
           </div>
         ) : (
-          // 未开启同步的渠道：保留手动改倍率入口
+          // 未开启同步的渠道：价格随所属分组倍率变化，渠道卡片仅保留模型/信息编辑
           <div className='flex items-center justify-between gap-2 border-t pt-2'>
             <span className='text-muted-foreground text-xs'>
               {t('Price sync off')}
             </span>
-            <div className='flex items-center gap-1.5'>
-              <Button
-                variant='outline'
-                size='sm'
-                className='h-7'
-                onClick={() => setEditChannel(channel)}
-              >
-                {t('Edit Channel')}
-              </Button>
-              <Button
-                variant='outline'
-                size='sm'
-                className='h-7'
-                onClick={() => setEditing(true)}
-              >
-                {t('Modify Rate')}
-              </Button>
-            </div>
+            <Button
+              variant='outline'
+              size='sm'
+              className='h-7'
+              onClick={() => setEditChannel(channel)}
+            >
+              {t('Edit Channel')}
+            </Button>
           </div>
         )}
       </CardContent>
@@ -702,55 +825,45 @@ function ChannelCard({
           onSaved={onChanged}
         />
       )}
-
-      <Dialog open={editing} onOpenChange={setEditing}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {t('Modify Rate')}:{' '}
-              {channel.name || `#${channel.channel_id}`}
-            </DialogTitle>
-          </DialogHeader>
-          <RateEditForm
-            channel={channel}
-            onSaved={() => {
-              setEditing(false)
-              queryClient.invalidateQueries({
-                queryKey: ['merchant', 'pools'],
-              })
-            }}
-          />
-        </DialogContent>
-      </Dialog>
     </Card>
   )
 }
 
-/** 修改渠道倍率：只影响自己渠道，价格由后端按倍率派生。 */
-function RateEditForm({
-  channel,
+/** 申请调整商家专属分组倍率、说明与 Auto 自动路由开关（提交管理员审核）。 */
+function GroupRateEditForm({
+  pool,
+  groupRatio,
+  groupDesc,
+  inAutoGroup,
   onSaved,
 }: {
-  channel: MerchantPoolChannel
+  pool: string
+  groupRatio: number
+  groupDesc: string
+  inAutoGroup: boolean
   onSaved: () => void
 }) {
   const { t } = useTranslation()
-  const [rate, setRate] = useState(String(channel.rate_multiplier ?? ''))
+  const [rate, setRate] = useState(String(groupRatio || 1))
+  const [desc, setDesc] = useState(groupDesc)
+  const [joinAuto, setJoinAuto] = useState(inAutoGroup)
   const [saving, setSaving] = useState(false)
 
   async function save() {
     const value = Number(rate)
-    if (!Number.isFinite(value) || value <= 0) {
-      toast.error(t('Rate multiplier must be a positive number'))
+    if (!Number.isFinite(value) || value <= 0 || value > 100) {
+      toast.error(t('分组倍率需在 0（不含）到 100 之间'))
       return
     }
     setSaving(true)
     try {
       await updateMerchantRate({
-        channel_id: channel.channel_id,
+        group_name: pool,
         rate_multiplier: value,
+        group_desc: desc.trim(),
+        join_auto_group: joinAuto,
       })
-      toast.success(t('Rate updated'))
+      toast.success(t('分组变更申请已提交，等待管理员审核'))
       onSaved()
     } catch (error) {
       handleServerError(error, t('Failed to update rate'))
@@ -762,24 +875,50 @@ function RateEditForm({
   return (
     <div className='space-y-4'>
       <div className='space-y-1.5'>
-        <Label htmlFor='merchant-channel-rate'>
-          {t('Channel Rate Multiplier')}
+        <Label htmlFor='merchant-group-edit-rate'>
+          {t('分组倍率（GroupRatio）')}
         </Label>
         <Input
-          id='merchant-channel-rate'
+          id='merchant-group-edit-rate'
           type='number'
-          step='0.0001'
+          step='0.01'
+          min='0.01'
+          max='100'
           value={rate}
           onChange={(e) => setRate(e.target.value)}
         />
         <p className='text-muted-foreground text-xs'>
           {t(
-            'Discount factor relative to the platform standard price: 0.1 means 10% of it.'
+            '1.0 = 平台标准价，0.5 = 五折；审核通过后将同步更新分组倍率并重算盘口。'
           )}
         </p>
       </div>
+      <div className='space-y-1.5'>
+        <Label htmlFor='merchant-group-edit-desc'>{t('分组说明')}</Label>
+        <Input
+          id='merchant-group-edit-desc'
+          value={desc}
+          onChange={(e) => setDesc(e.target.value)}
+          placeholder={t('向终端用户展示在分组选择器中的说明')}
+        />
+      </div>
+      <div className='flex items-center justify-between gap-3 rounded-md border px-3 py-2'>
+        <div className='space-y-0.5'>
+          <Label htmlFor='merchant-group-edit-auto'>
+            {t('加入平台 Auto 自动路由')}
+          </Label>
+          <p className='text-muted-foreground text-xs'>
+            {t('开启后，该专属分组将纳入平台 auto 自动路由池。')}
+          </p>
+        </div>
+        <Switch
+          id='merchant-group-edit-auto'
+          checked={joinAuto}
+          onCheckedChange={setJoinAuto}
+        />
+      </div>
       <Button onClick={save} disabled={saving}>
-        {t('Save')}
+        {t('提交变更审核')}
       </Button>
     </div>
   )

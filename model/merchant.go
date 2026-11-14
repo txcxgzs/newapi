@@ -15,6 +15,12 @@ const (
 	MerchantApplicationRejected = 2
 )
 
+// 商家申请类型
+const (
+	MerchantAppTypeChannel     = "channel"      // 入驻或新增渠道/分组
+	MerchantAppTypeGroupChange = "group_change" // 申请调整已有商家分组的倍率/描述/Auto路由
+)
+
 // 提现状态
 const (
 	WithdrawalPending  = 0
@@ -39,16 +45,20 @@ func (MerchantProfile) TableName() string {
 	return "merchant_profiles"
 }
 
-// MerchantApplication 商家入驻申请：自助填写站点信息+密钥+渠道倍率，管理员审核通过后
-// 自动创建归属该用户的渠道，并由「平台标准倍率 × 渠道倍率」派生盘口。
+// MerchantApplication 商家入驻与分组变更申请：支持首次入驻、扩容渠道/自建专属分组，
+// 以及调整已有商家分组的倍率与 Auto 自动路由状态；管理员审核通过后写入原生分组配置并派生盘口。
 type MerchantApplication struct {
-	Id       int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserId   int    `json:"user_id" gorm:"not null;index"`
-	SiteName string `json:"site_name" gorm:"type:varchar(128);not null"`
-	SiteUrl  string `json:"site_url" gorm:"type:varchar(255);not null"`
-	SiteKey  string `json:"-" gorm:"type:text;not null"` // 上游密钥，永不回显；审核结束后清空
-	Models   string `json:"models" gorm:"type:text"`     // json: [{model,pool}]
-	// RateMultiplier 申请时声明的渠道倍率：相对平台标准价的折扣系数（0.1 = 一折）。
+	Id            int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId        int    `json:"user_id" gorm:"not null;index"`
+	AppType       string `json:"app_type" gorm:"type:varchar(32);default:'channel'"`
+	SiteName      string `json:"site_name" gorm:"type:varchar(128);not null"`
+	SiteUrl       string `json:"site_url" gorm:"type:varchar(255);not null"`
+	SiteKey       string `json:"-" gorm:"type:text;not null"` // 上游密钥，永不回显；审核结束后清空
+	Models        string `json:"models" gorm:"type:text"`     // json: [{model,pool}]
+	GroupName     string `json:"group_name" gorm:"type:varchar(64);default:''"`
+	GroupDesc     string `json:"group_desc" gorm:"type:varchar(255);default:''"`
+	JoinAutoGroup bool   `json:"join_auto_group" gorm:"default:false"`
+	// RateMultiplier 申请时声明的分组倍率（GroupRatio）。
 	// 审核时管理员可覆盖；未填写（0）视为 1.0 原价。
 	RateMultiplier float64 `json:"rate_multiplier" gorm:"default:1"`
 	// UpstreamKind 申请的网关类型：newapi / sub2api / openai，空为自动判定。

@@ -69,7 +69,6 @@ type BillingSnapshot struct {
 	ExprString                string         `json:"expr_string"`
 	ExprHash                  string         `json:"expr_hash"`
 	GroupRatio                float64        `json:"group_ratio"`
-	ChannelRate               float64        `json:"channel_rate,omitempty"` // 渠道费率乘数（商家渠道倍率）；零值（旧快照）按 1 处理
 	EstimatedPromptTokens     int            `json:"estimated_prompt_tokens"`
 	EstimatedCompletionTokens int            `json:"estimated_completion_tokens"`
 	PreConsumeMultiplier      float64        `json:"pre_consume_multiplier,omitempty"` // Reservation only; zero in older snapshots means 1.

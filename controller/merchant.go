@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -26,10 +29,17 @@ import (
 // errMerchantApplicationPending 用户已存在待审申请（事务内查重命中）。
 var errMerchantApplicationPending = errors.New("merchant application pending")
 
+// errMerchantGroupForbidden 商家试图操作无权访问的系统/他人/平台预设分组。
+var errMerchantGroupForbidden = errors.New("merchant group forbidden")
+
+// merchantGroupSyncMu 串行化管理员审核时对全局 GroupRatio / UserUsableGroups / AutoGroups 的读写，
+// 防止并发审核互相覆盖。
+var merchantGroupSyncMu sync.Mutex
+
 // merchantModelQuote 入驻申请中要上架的模型条目。
 // Model 是平台官方模型名（用户请求的名字）；Upstream 是上游实际模型名，
 // 两者不同时审核通过会写入渠道的 model_mapping（官方名 → 上游名）。
-// 商家不填价格：模型归属哪个号池由管理员审核时决定，价格由渠道倍率派生。
+// 商家不填价格：模型归属哪个号池由管理员审核时决定，价格由分组倍率派生。
 type merchantModelQuote struct {
 	Model    string `json:"model"`
 	Pool     string `json:"pool"`
@@ -39,17 +49,174 @@ type merchantModelQuote struct {
 // merchantChannelModelLimit 审核通过时写入渠道的模型数上限（探测清单可能很长）。
 const merchantChannelModelLimit = 200
 
-// merchantRateMultiplierLimit 渠道倍率（相对平台标准价的折扣系数）上限。
-// 商家门户调倍率已有 0（不含）~100 的校验，提交申请、编辑渠道与审核通过
-// 同样必须拦截，否则可以绕过门户把天价倍率写进渠道的派生盘口。
+// merchantRateMultiplierLimit 分组倍率上限。
 const merchantRateMultiplierLimit = 100.0
+
+// isSystemReservedGroup 判定分组名称是否为系统保留分组，防止商家声明或篡改平台核心分组。
+func isSystemReservedGroup(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "default", "vip", "svip", "auto", "all", "null":
+		return true
+	default:
+		return false
+	}
+}
+
+// validateMerchantGroupName 校验商家专属分组名称格式与保留词约束。
+func validateMerchantGroupName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed != name || len(trimmed) < 2 || len(trimmed) > 64 {
+		return errors.New("分组名称长度需在 2~64 个字符之间，且首尾不能有空白")
+	}
+	if isSystemReservedGroup(trimmed) {
+		return fmt.Errorf("分组名称 %q 为系统保留分组，请使用其他名称", trimmed)
+	}
+	for _, r := range trimmed {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !isAlphaNum && r != '-' && r != '_' {
+			return fmt.Errorf("分组名称 %q 仅允许字母、数字、连字符(-)与下划线(_)", trimmed)
+		}
+	}
+	return nil
+}
+
+// validateMerchantGroupOwnership 校验商家是否有权创建或修改指定专属分组：
+// 拒绝系统保留分组、存在其他商家或平台渠道的分组、被其他商家申请占用的分组；
+// mustExist 为 true 时要求当前商家已拥有该分组（修改倍率 / Auto 路由）。
+func validateMerchantGroupOwnership(userId int, groupName string, mustExist bool) error {
+	if err := validateMerchantGroupName(groupName); err != nil {
+		return err
+	}
+	var foreignChannelCount int64
+	if err := model.ApplyChannelGroupFilter(model.DB.Model(&model.Channel{}), groupName).
+		Where("merchant_id <> ?", userId).
+		Count(&foreignChannelCount).Error; err != nil {
+		return err
+	}
+	if foreignChannelCount > 0 {
+		return fmt.Errorf("%w：分组 %q 已被平台或其他商家占用", errMerchantGroupForbidden, groupName)
+	}
+	var otherAppCount int64
+	if err := model.DB.Model(&model.MerchantApplication{}).
+		Where("user_id <> ? AND group_name = ? AND status IN ?",
+			userId, groupName, []int{model.MerchantApplicationPending, model.MerchantApplicationApproved}).
+		Count(&otherAppCount).Error; err != nil {
+		return err
+	}
+	if otherAppCount > 0 {
+		return fmt.Errorf("%w：分组 %q 已被其他商家申请或使用", errMerchantGroupForbidden, groupName)
+	}
+	var ownChannelCount int64
+	if err := model.ApplyChannelGroupFilter(model.DB.Model(&model.Channel{}), groupName).
+		Where("merchant_id = ?", userId).
+		Count(&ownChannelCount).Error; err != nil {
+		return err
+	}
+	var ownApprovedAppCount int64
+	if err := model.DB.Model(&model.MerchantApplication{}).
+		Where("user_id = ? AND group_name = ? AND status = ?",
+			userId, groupName, model.MerchantApplicationApproved).
+		Count(&ownApprovedAppCount).Error; err != nil {
+		return err
+	}
+	ownsGroup := ownChannelCount > 0 || ownApprovedAppCount > 0
+	if mustExist {
+		if !ownsGroup {
+			return fmt.Errorf("%w：您尚无权调整分组 %q，请先创建或申请该专属分组", errMerchantGroupForbidden, groupName)
+		}
+	} else if ratio_setting.ContainsGroupRatio(groupName) && !ownsGroup {
+		return fmt.Errorf("%w：分组 %q 为平台预设分组，新建专属分组请使用其他名称", errMerchantGroupForbidden, groupName)
+	}
+	return nil
+}
+
+// syncMerchantGroupToNativeSettings 把审核通过的商家分组同步至 New-API 原生配置：
+// GroupRatio（分组倍率）、UserUsableGroups（用户可选分组列表与说明）与 AutoGroups（auto 路由池）。
+func syncMerchantGroupToNativeSettings(groupName, groupDesc string, rateMultiplier float64, joinAutoGroup bool, fallbackSiteName string) error {
+	merchantGroupSyncMu.Lock()
+	defer merchantGroupSyncMu.Unlock()
+
+	groupRatios := ratio_setting.GetGroupRatioCopy()
+	groupRatios[groupName] = normalizeRateMultiplier(rateMultiplier)
+
+	usableGroups := setting.GetUserUsableGroupsCopy()
+	desc := strings.TrimSpace(groupDesc)
+	if desc == "" {
+		if existing := strings.TrimSpace(usableGroups[groupName]); existing != "" {
+			desc = existing
+		} else if strings.TrimSpace(fallbackSiteName) != "" {
+			desc = "商家分组: " + strings.TrimSpace(fallbackSiteName)
+		} else {
+			desc = "商家分组: " + groupName
+		}
+	}
+	usableGroups[groupName] = desc
+
+	autoGroups := make([]string, 0, len(setting.GetAutoGroups())+1)
+	for _, g := range setting.GetAutoGroups() {
+		if g != groupName && !slices.Contains(autoGroups, g) {
+			autoGroups = append(autoGroups, g)
+		}
+	}
+	if joinAutoGroup {
+		autoGroups = append(autoGroups, groupName)
+	}
+
+	groupRatioJSON, err := common.Marshal(groupRatios)
+	if err != nil {
+		return err
+	}
+	usableGroupsJSON, err := common.Marshal(usableGroups)
+	if err != nil {
+		return err
+	}
+	autoGroupsJSON, err := common.Marshal(autoGroups)
+	if err != nil {
+		return err
+	}
+	return model.UpdateOptionsBulk(map[string]string{
+		"GroupRatio":       string(groupRatioJSON),
+		"UserUsableGroups": string(usableGroupsJSON),
+		"AutoGroups":       string(autoGroupsJSON),
+	})
+}
+
+// createPendingMerchantApplication 事务内查重并写入一条待审核商家申请（入驻/扩容/改价共用）。
+func createPendingMerchantApplication(app *model.MerchantApplication) error {
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		// 锁定读必须避免聚合函数：PG 禁止 count(*) 与 FOR UPDATE 同用，
+		// 用 SELECT id ... LIMIT 1 判重；MySQL 下同时锁住 user_id 索引间隙
+		//（依赖 InnoDB 默认 REPEATABLE READ，READ-COMMITTED 无间隙锁），
+		// SQLite 跳过锁、靠单写者串行化。
+		check := tx.Model(&model.MerchantApplication{}).
+			Where("user_id = ? AND status = ?", app.UserId, model.MerchantApplicationPending).
+			Select("id").Limit(1)
+		if !common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+			check = check.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var pendingIds []int
+		if err := check.Find(&pendingIds).Error; err != nil {
+			return err
+		}
+		if len(pendingIds) > 0 {
+			return errMerchantApplicationPending
+		}
+		return tx.Create(app).Error
+	})
+}
+
+// writeMerchantGroupValidationError 把分组归属/格式错误映射为对应的 HTTP 响应码。
+func writeMerchantGroupValidationError(c *gin.Context, err error) {
+	status := http.StatusBadRequest
+	if errors.Is(err, errMerchantGroupForbidden) {
+		status = http.StatusForbidden
+	}
+	c.JSON(status, gin.H{"success": false, "message": err.Error()})
+}
 
 // ---------- 用户侧：入驻申请 ----------
 
-// PostMerchantApplication 登录用户提交商家入驻申请。
-// 上游类型（newapi/sub2api/openai）决定中继端点家族与报价同步能力。
-// 商家只填渠道倍率（相对平台标准价的折扣系数），不填任何价格；
-// Sub2API 一类不暴露价格接口的网关可以不填模型清单，审核时由探测补全。
+// PostMerchantApplication 登录用户提交商家入驻或扩容/自建分组申请。
 func PostMerchantApplication(c *gin.Context) {
 	userId := c.GetInt("id")
 	var req struct {
@@ -57,6 +224,9 @@ func PostMerchantApplication(c *gin.Context) {
 		SiteUrl        string               `json:"site_url" binding:"required"`
 		SiteKey        string               `json:"site_key" binding:"required"`
 		UpstreamKind   string               `json:"upstream_kind"`
+		GroupName      string               `json:"group_name"`
+		GroupDesc      string               `json:"group_desc"`
+		JoinAutoGroup  bool                 `json:"join_auto_group"`
 		RateMultiplier float64              `json:"rate_multiplier"`
 		Models         []merchantModelQuote `json:"models"`
 	}
@@ -79,8 +249,16 @@ func PostMerchantApplication(c *gin.Context) {
 		req.Models[i].Model = name
 	}
 	if req.RateMultiplier < 0 || req.RateMultiplier > merchantRateMultiplierLimit {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率不能为负数，且不能超过 100"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率不能为负数，且不能超过 100"})
 		return
+	}
+
+	groupName := strings.TrimSpace(req.GroupName)
+	if groupName != "" {
+		if err := validateMerchantGroupOwnership(userId, groupName, false); err != nil {
+			writeMerchantGroupValidationError(c, err)
+			return
+		}
 	}
 
 	// 已是商家的用户提交的是"扩容申请"（在已有分组下新增渠道），允许提交；
@@ -91,8 +269,12 @@ func PostMerchantApplication(c *gin.Context) {
 			return
 		}
 	}
-	// 已有待审申请则拒绝重复提交。查重与插入放进同一事务：锁定读防止并发下
-	// 先查后插的重复提交；SQLite 单写者串行化，并发提交表现为 BUSY 失败，不会重复插入。
+	rateMultiplier := req.RateMultiplier
+	if rateMultiplier <= 0 && groupName != "" && ratio_setting.ContainsGroupRatio(groupName) {
+		if existingRatio := ratio_setting.GetGroupRatio(groupName); existingRatio > 0 {
+			rateMultiplier = existingRatio
+		}
+	}
 	modelsJson, err := common.Marshal(req.Models)
 	if err != nil {
 		common.ApiError(c, err)
@@ -100,43 +282,24 @@ func PostMerchantApplication(c *gin.Context) {
 	}
 	app := &model.MerchantApplication{
 		UserId:         userId,
+		AppType:        model.MerchantAppTypeChannel,
 		SiteName:       strings.TrimSpace(req.SiteName),
 		SiteUrl:        strings.TrimSpace(req.SiteUrl),
 		SiteKey:        req.SiteKey,
 		Models:         string(modelsJson),
-		RateMultiplier: normalizeRateMultiplier(req.RateMultiplier),
+		GroupName:      groupName,
+		GroupDesc:      strings.TrimSpace(req.GroupDesc),
+		JoinAutoGroup:  req.JoinAutoGroup,
+		RateMultiplier: normalizeRateMultiplier(rateMultiplier),
 		UpstreamKind:   string(service.ParseUpstreamKind(req.UpstreamKind)),
 		Status:         model.MerchantApplicationPending,
 		CreatedAt:      time.Now().Unix(),
 	}
-	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// 锁定读必须避免聚合函数：PG 禁止 count(*) 与 FOR UPDATE 同用，
-		// 用 SELECT id ... LIMIT 1 判重；MySQL 下同时锁住 user_id 索引间隙
-		//（依赖 InnoDB 默认 REPEATABLE READ，READ-COMMITTED 无间隙锁），
-		// SQLite 跳过锁、靠单写者串行化。
-		check := tx.Model(&model.MerchantApplication{}).
-			Where("user_id = ? AND status = ?", userId, model.MerchantApplicationPending).
-			Select("id").Limit(1)
-		if !common.UsingMainDatabase(common.DatabaseTypeSQLite) {
-			check = check.Clauses(clause.Locking{Strength: "UPDATE"})
-		}
-		var pendingIds []int
-		if err := check.Find(&pendingIds).Error; err != nil {
-			return err
-		}
-		if len(pendingIds) > 0 {
-			return errMerchantApplicationPending
-		}
-		return tx.Create(app).Error
-	}); err != nil {
+	if err := createPendingMerchantApplication(app); err != nil {
 		if errors.Is(err, errMerchantApplicationPending) {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
 			return
 		}
-		// 部分唯一索引兜底触发：PG 竞态窗口内的并发双插，后到的入库失败。
-		// 注：gorm 未开启 TranslateError，ErrDuplicatedKey 当前恒不命中，
-		// 实际靠下方 hasPendingMerchantApplication 复核；保留它作为将来
-		// 开启错误翻译后的第一道快速路径。
 		if errors.Is(err, gorm.ErrDuplicatedKey) || hasPendingMerchantApplication(userId) {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
 			return
@@ -144,6 +307,7 @@ func PostMerchantApplication(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	app.SiteKey = ""
 	common.ApiSuccess(c, app)
 }
 
@@ -678,46 +842,127 @@ type MerchantPoolChannel struct {
 	AvgUseTime    float64 `json:"avg_use_time"` // 平均耗时（秒）
 }
 
+// MerchantPoolMeta 单个号池（分组）的分组倍率、说明、Auto 路由状态与归属标识。
+type MerchantPoolMeta struct {
+	GroupRatio      float64 `json:"group_ratio"`
+	GroupDesc       string  `json:"group_desc"`
+	InAutoGroup     bool    `json:"in_auto_group"`
+	IsMerchantGroup bool    `json:"is_merchant_group"`
+}
+
 // MerchantPoolGroup 一个号池分组及其下商家的全部池子。
 type MerchantPoolGroup struct {
-	Pool        string                `json:"pool"`
-	Channels    []MerchantPoolChannel `json:"channels"`
-	Calls24h    int64                 `json:"calls_24h"`
-	QuotaUsd24h float64               `json:"quota_usd_24h"`
-	SuccessRate float64               `json:"success_rate"`
+	Pool            string                `json:"pool"`
+	GroupRatio      float64               `json:"group_ratio"`
+	GroupDesc       string                `json:"group_desc"`
+	InAutoGroup     bool                  `json:"in_auto_group"`
+	IsMerchantGroup bool                  `json:"is_merchant_group"`
+	Channels        []MerchantPoolChannel `json:"channels"`
+	Calls24h        int64                 `json:"calls_24h"`
+	QuotaUsd24h     float64               `json:"quota_usd_24h"`
+	SuccessRate     float64               `json:"success_rate"`
 }
 
 // GetMerchantPortalPools 商家门户的分组/池子视图。
-// 返回平台全部可对接分组 + 商家在每个分组下已接入的池子（含倍率/耗时/健康度）。
+// 返回平台全部可对接分组 + 分组倍率/Auto路由元信息 + 商家在每个分组下已接入的渠道（含耗时/健康度）。
 func GetMerchantPortalPools(c *gin.Context) {
 	profile, ok := requireActiveMerchant(c)
 	if !ok {
 		return
 	}
-	// 平台预设分组：商家需要看到所有可对接的分组，哪怕自己还没接入
-	allPools := make([]string, 0)
-	for name := range ratio_setting.GetGroupRatioCopy() {
+	// 平台分组：商家需要看到全部分组及其倍率/Auto 路由归属，哪怕自己还没接入
+	groupRatios := ratio_setting.GetGroupRatioCopy()
+	usableGroups := setting.GetUserUsableGroupsCopy()
+	allPools := make([]string, 0, len(groupRatios))
+	for name := range groupRatios {
 		allPools = append(allPools, name)
 	}
 	sort.Strings(allPools)
+
+	// 查询当前商家已获批的专属分组名，用于区分「商家专属分组」与「平台预设/系统保留分组」
+	var approvedGroupNames []string
+	_ = model.DB.Model(&model.MerchantApplication{}).
+		Where("user_id = ? AND status = ? AND group_name <> ''", profile.UserId, model.MerchantApplicationApproved).
+		Distinct("group_name").Pluck("group_name", &approvedGroupNames).Error
+	approvedGroupSet := make(map[string]bool, len(approvedGroupNames))
+	for _, g := range approvedGroupNames {
+		approvedGroupSet[g] = true
+	}
+
+	// 当前待审核申请（如有），用于门户提示审核中状态
+	var pendingApp *model.MerchantApplication
+	var pendingRow model.MerchantApplication
+	if err := model.DB.Where("user_id = ? AND status = ?", profile.UserId, model.MerchantApplicationPending).
+		Order("id DESC").First(&pendingRow).Error; err == nil {
+		pendingRow.SiteKey = ""
+		pendingApp = &pendingRow
+	}
 
 	channelIds, err := model.GetMerchantChannelIds(profile.UserId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	var channels []model.Channel
+	if len(channelIds) > 0 {
+		if err := model.DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
+
+	merchantChannelPools := make(map[string]bool)
+	for _, ch := range channels {
+		for _, pool := range splitModelList(ch.Group) {
+			merchantChannelPools[pool] = true
+		}
+	}
+
+	// 检查商家关联到的非保留分组是否存在其他商家或平台渠道，精确判定 is_merchant_group
+	candidateOwned := make(map[string]bool)
+	for pool := range approvedGroupSet {
+		candidateOwned[pool] = true
+	}
+	for pool := range merchantChannelPools {
+		candidateOwned[pool] = true
+	}
+	ownedMerchantGroup := make(map[string]bool)
+	for pool := range candidateOwned {
+		if isSystemReservedGroup(pool) {
+			continue
+		}
+		var foreignCount int64
+		if err := model.ApplyChannelGroupFilter(model.DB.Model(&model.Channel{}), pool).
+			Where("merchant_id <> ?", profile.UserId).Count(&foreignCount).Error; err == nil && foreignCount == 0 {
+			ownedMerchantGroup[pool] = true
+		}
+	}
+
+	poolMeta := make(map[string]MerchantPoolMeta, len(allPools))
+	for _, pool := range allPools {
+		gr := groupRatios[pool]
+		if gr <= 0 {
+			gr = 1.0
+		}
+		poolMeta[pool] = MerchantPoolMeta{
+			GroupRatio:      gr,
+			GroupDesc:       usableGroups[pool],
+			InAutoGroup:     setting.ContainsAutoGroup(pool),
+			IsMerchantGroup: ownedMerchantGroup[pool],
+		}
+	}
+
 	groups := make([]MerchantPoolGroup, 0)
 	if len(channelIds) == 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
-			"data":    gin.H{"all_pools": allPools, "groups": groups},
+			"data": gin.H{
+				"all_pools":           allPools,
+				"groups":              groups,
+				"pool_meta":           poolMeta,
+				"pending_application": pendingApp,
+			},
 		})
-		return
-	}
-
-	var channels []model.Channel
-	if err := model.DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
-		common.ApiError(c, err)
 		return
 	}
 
@@ -769,15 +1014,31 @@ func GetMerchantPortalPools(c *gin.Context) {
 			AvgUseTime:     h.AvgUseTime,
 		}
 		for _, pool := range splitModelList(ch.Group) {
+			meta := poolMeta[pool]
+			if meta.GroupRatio <= 0 {
+				meta.GroupRatio = ratio_setting.GetGroupRatio(pool)
+				if meta.GroupRatio <= 0 {
+					meta.GroupRatio = 1.0
+				}
+			}
+			poolItem := item
+			poolItem.RateMultiplier = meta.GroupRatio
 			pos, exists := index[pool]
 			if !exists {
-				groups = append(groups, MerchantPoolGroup{Pool: pool, Channels: []MerchantPoolChannel{}})
+				groups = append(groups, MerchantPoolGroup{
+					Pool:            pool,
+					GroupRatio:      meta.GroupRatio,
+					GroupDesc:       meta.GroupDesc,
+					InAutoGroup:     meta.InAutoGroup,
+					IsMerchantGroup: meta.IsMerchantGroup,
+					Channels:        []MerchantPoolChannel{},
+				})
 				pos = len(groups) - 1
 				index[pool] = pos
 			}
-			groups[pos].Channels = append(groups[pos].Channels, item)
+			groups[pos].Channels = append(groups[pos].Channels, poolItem)
 			groups[pos].Calls24h += h.Calls
-			groups[pos].QuotaUsd24h += item.QuotaUsd24h
+			groups[pos].QuotaUsd24h += poolItem.QuotaUsd24h
 		}
 	}
 	for i := range groups {
@@ -790,7 +1051,12 @@ func GetMerchantPortalPools(c *gin.Context) {
 		}
 	}
 
-	common.ApiSuccess(c, gin.H{"all_pools": allPools, "groups": groups})
+	common.ApiSuccess(c, gin.H{
+		"all_pools":           allPools,
+		"groups":              groups,
+		"pool_meta":           poolMeta,
+		"pending_application": pendingApp,
+	})
 }
 
 // splitModelList 拆分渠道的逗号分隔清单（分组名/模型名共用）。
@@ -972,64 +1238,109 @@ func GetMerchantPortalQuotes(c *gin.Context) {
 	items := make([]portalQuote, 0, len(quotes))
 	for _, q := range quotes {
 		ch := channelById[q.ChannelId]
-		platformRatio := 0.0
-		if ch.GetRateMultiplier() > 0 {
-			platformRatio = q.RateMultiplier / ch.GetRateMultiplier()
+		groupRatio := ratio_setting.GetGroupRatio(q.PoolGroup)
+		if groupRatio <= 0 {
+			groupRatio = 1.0
 		}
+		platformRatio := q.RateMultiplier / groupRatio
 		items = append(items, portalQuote{
 			ChannelQuote:      q,
 			ChannelName:       ch.Name,
-			ChannelRate:       ch.GetRateMultiplier(),
+			ChannelRate:       groupRatio,
 			PlatformModelRate: platformRatio,
 		})
 	}
 	common.ApiSuccess(c, items)
 }
 
-// UpdateMerchantPortalRate 商家调整自己渠道的倍率。
-// 倍率是渠道唯一的定价输入（相对平台标准价的折扣系数），
-// 修改后立即重算该渠道的派生盘口，行情与智能路由随之更新。
+// UpdateMerchantPortalRate 商家提交专属分组倍率 / 描述 / Auto 自动路由变更申请（需管理员审核）。
 func UpdateMerchantPortalRate(c *gin.Context) {
 	profile, ok := requireActiveMerchant(c)
 	if !ok {
 		return
 	}
 	var req struct {
-		ChannelId      int     `json:"channel_id" binding:"required"`
+		GroupName      string  `json:"group_name"`
+		ChannelId      int     `json:"channel_id"`
 		RateMultiplier float64 `json:"rate_multiplier" binding:"required"`
+		GroupDesc      string  `json:"group_desc"`
+		JoinAutoGroup  *bool   `json:"join_auto_group"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
 	if req.RateMultiplier <= 0 || req.RateMultiplier > merchantRateMultiplierLimit {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率需在 0（不含）到 100 之间"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率需在 0（不含）到 100 之间"})
 		return
 	}
-	// 数据隔离：只能改自己名下的渠道
-	var channel model.Channel
-	if err := model.DB.Where("id = ? AND merchant_id = ?", req.ChannelId, profile.UserId).
-		First(&channel).Error; err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "无权操作该渠道"})
+	groupName := strings.TrimSpace(req.GroupName)
+	if groupName == "" && req.ChannelId > 0 {
+		channel, ok := merchantOwnedChannel(c, profile, req.ChannelId)
+		if !ok {
+			return
+		}
+		for _, g := range splitModelList(channel.Group) {
+			if !isSystemReservedGroup(g) {
+				groupName = g
+				break
+			}
+		}
+		if groupName == "" {
+			if groups := splitModelList(channel.Group); len(groups) > 0 {
+				groupName = groups[0]
+			}
+		}
+	}
+	if groupName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "请指定要调整的专属分组名称"})
 		return
 	}
-	if err := model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).
-		Update("rate_multiplier", req.RateMultiplier).Error; err != nil {
+	if err := validateMerchantGroupOwnership(profile.UserId, groupName, true); err != nil {
+		writeMerchantGroupValidationError(c, err)
+		return
+	}
+	joinAuto := setting.ContainsAutoGroup(groupName)
+	if req.JoinAutoGroup != nil {
+		joinAuto = *req.JoinAutoGroup
+	}
+	groupDesc := strings.TrimSpace(req.GroupDesc)
+	if groupDesc == "" {
+		groupDesc = strings.TrimSpace(setting.GetUserUsableGroupsCopy()[groupName])
+	}
+
+	app := &model.MerchantApplication{
+		UserId:         profile.UserId,
+		AppType:        model.MerchantAppTypeGroupChange,
+		SiteName:       profile.SiteName,
+		SiteUrl:        profile.SiteUrl,
+		SiteKey:        "",
+		Models:         "[]",
+		GroupName:      groupName,
+		GroupDesc:      groupDesc,
+		JoinAutoGroup:  joinAuto,
+		RateMultiplier: req.RateMultiplier,
+		Status:         model.MerchantApplicationPending,
+		CreatedAt:      time.Now().Unix(),
+	}
+	if err := createPendingMerchantApplication(app); err != nil {
+		if errors.Is(err, errMerchantApplicationPending) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
+			return
+		}
+		if errors.Is(err, gorm.ErrDuplicatedKey) || hasPendingMerchantApplication(profile.UserId) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
+			return
+		}
 		common.ApiError(c, err)
 		return
-	}
-	channel.RateMultiplier = req.RateMultiplier
-	if err := model.RebuildChannelQuotes(channel.Id); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	// 渠道倍率已接入计费：刷新内存渠道缓存，否则下一笔请求仍按旧倍率扣费。
-	if common.MemoryCacheEnabled {
-		model.InitChannelCache()
 	}
 	common.ApiSuccess(c, gin.H{
-		"channel_id":      channel.Id,
-		"rate_multiplier": req.RateMultiplier,
+		"pending_review":  true,
+		"application_id":  app.Id,
+		"group_name":      app.GroupName,
+		"rate_multiplier": app.RateMultiplier,
+		"join_auto_group": app.JoinAutoGroup,
 	})
 }
 
@@ -1241,8 +1552,8 @@ func isPlatformPriceableModel(name string) bool {
 	return false
 }
 
-// ReviewMerchantApplication 管理员审核入驻申请。
-// approve：创建商家渠道 + 写入手填报价 + 建资料/钱包 + 用户升级为商家角色。
+// ReviewMerchantApplication 管理员审核商家入驻、扩容与分组变更申请。
+// approve：同步专属分组的 GroupRatio/UserUsableGroups/AutoGroups；入驻/扩容同时建渠道并派生盘口。
 func ReviewMerchantApplication(c *gin.Context) {
 	adminId := c.GetInt("id")
 	appId, err := strconv.Atoi(c.Param("id"))
@@ -1251,13 +1562,16 @@ func ReviewMerchantApplication(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Action      string   `json:"action" binding:"required"` // approve | reject
-		ReviewNote  string   `json:"review_note"`
-		Pools       []string `json:"pools"` // approve 时渠道加入的号池
-		ProfitRatio *float64 `json:"profit_ratio"`
-		Priority    *int64   `json:"priority"`
-		Weight      *uint    `json:"weight"`
-		// RateMultiplier 审核时可覆盖商家申请的渠道倍率（相对平台标准价的折扣系数）
+		Action         string   `json:"action" binding:"required"` // approve | reject
+		ReviewNote     string   `json:"review_note"`
+		Pools          []string `json:"pools"` // approve 时渠道加入的号池
+		GroupName      *string  `json:"group_name"`
+		GroupDesc      *string  `json:"group_desc"`
+		JoinAutoGroup  *bool    `json:"join_auto_group"`
+		ProfitRatio    *float64 `json:"profit_ratio"`
+		Priority       *int64   `json:"priority"`
+		Weight         *uint    `json:"weight"`
+		// RateMultiplier 审核时可覆盖商家申请的分组倍率（GroupRatio）
 		RateMultiplier *float64 `json:"rate_multiplier"`
 		// 上游类型可在审核时覆盖申请声明；channel_type 直接指定渠道类型
 		// （1=OpenAI 兼容 / 59=Sub2API / 60=New API），price_sync 覆盖报价同步开关。
@@ -1267,6 +1581,10 @@ func ReviewMerchantApplication(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
+		return
+	}
+	if req.Action != "approve" && req.Action != "reject" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "未知操作"})
 		return
 	}
 
@@ -1282,20 +1600,32 @@ func ReviewMerchantApplication(c *gin.Context) {
 		return
 	}
 
+	isGroupChange := preview.AppType == model.MerchantAppTypeGroupChange
+
+	targetGroup := strings.TrimSpace(preview.GroupName)
+	if req.GroupName != nil {
+		targetGroup = strings.TrimSpace(*req.GroupName)
+	}
+	targetDesc := strings.TrimSpace(preview.GroupDesc)
+	if req.GroupDesc != nil {
+		targetDesc = strings.TrimSpace(*req.GroupDesc)
+	}
+	joinAuto := preview.JoinAutoGroup
+	if req.JoinAutoGroup != nil {
+		joinAuto = *req.JoinAutoGroup
+	}
+
 	// 默认分成比例：商家拿 95%、平台抽 5%；管理员可在审核时覆盖。
 	profitRatio := 0.95
 	if req.ProfitRatio != nil && *req.ProfitRatio > 0 && *req.ProfitRatio <= 1 {
 		profitRatio = *req.ProfitRatio
 	}
 
-	// 渠道倍率：优先用管理员审核时填的值，否则沿用商家申请时声明的值。
-	// 这是渠道唯一的定价输入，盘口由「平台标准倍率 × 本倍率」派生。
-	// 上界与商家门户保持一致；申请若在提交校验修复前落库了超限倍率，
-	// 审核时也必须拦截，不能把天价盘口放进渠道。
+	// 分组倍率：优先用管理员审核时填的值，否则沿用商家申请时声明的值。
 	rateMultiplier := normalizeRateMultiplier(preview.RateMultiplier)
 	if req.RateMultiplier != nil {
 		if *req.RateMultiplier < 0 || *req.RateMultiplier > merchantRateMultiplierLimit {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "渠道倍率不能为负数，且不能超过 100"})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率不能为负数，且不能超过 100"})
 			return
 		}
 		if *req.RateMultiplier > 0 {
@@ -1303,11 +1633,99 @@ func ReviewMerchantApplication(c *gin.Context) {
 		}
 	}
 	if approve && rateMultiplier > merchantRateMultiplierLimit {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请声明的渠道倍率超过 100，请修正后再通过审核"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请声明的分组倍率超过 100，请修正后再通过审核"})
 		return
 	}
 
-	// 通过前的校验与探测放在事务之外：号池、站址（SSRF）、上游类型与模型清单。
+	// 分支 A：商家修改已有专属分组的倍率 / 描述 / Auto 自动路由开关
+	if approve && isGroupChange {
+		if targetGroup == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组变更申请缺少目标分组名称"})
+			return
+		}
+		if err := validateMerchantGroupOwnership(preview.UserId, targetGroup, true); err != nil {
+			writeMerchantGroupValidationError(c, err)
+			return
+		}
+		var affectedChannelIds []int
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			app, err := model.GetMerchantApplicationForUpdate(tx, appId)
+			if err != nil {
+				return err
+			}
+			if app.Status != model.MerchantApplicationPending {
+				return model.ErrMerchantApplicationHandled
+			}
+			app.ReviewNote = req.ReviewNote
+			app.ReviewedBy = adminId
+			app.ReviewedAt = time.Now().Unix()
+			app.Status = model.MerchantApplicationApproved
+			app.GroupName = targetGroup
+			app.GroupDesc = targetDesc
+			app.JoinAutoGroup = joinAuto
+			app.RateMultiplier = rateMultiplier
+			app.SiteKey = ""
+			if err := tx.Save(app).Error; err != nil {
+				return err
+			}
+			if err := model.ApplyChannelGroupFilter(tx.Model(&model.Channel{}), targetGroup).
+				Where("merchant_id = ?", app.UserId).
+				Pluck("id", &affectedChannelIds).Error; err != nil {
+				return err
+			}
+			if len(affectedChannelIds) > 0 {
+				if err := tx.Model(&model.Channel{}).Where("id IN ?", affectedChannelIds).
+					Update("rate_multiplier", rateMultiplier).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "申请不存在"})
+			return
+		case errors.Is(err, model.ErrMerchantApplicationHandled):
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请已处理"})
+			return
+		case err != nil:
+			common.ApiError(c, err)
+			return
+		}
+		if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, preview.SiteName); err != nil {
+			common.ApiError(c, fmt.Errorf("同步分组配置失败: %w", err))
+			return
+		}
+		for _, chId := range affectedChannelIds {
+			if err := model.RebuildChannelQuotes(chId); err != nil {
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("rebuild quotes for channel %d failed: %v", chId, err))
+			}
+		}
+		model.InitChannelCache()
+		common.ApiSuccess(c, gin.H{
+			"app_type":        model.MerchantAppTypeGroupChange,
+			"group_name":      targetGroup,
+			"rate_multiplier": rateMultiplier,
+			"join_auto_group": joinAuto,
+			"channel_id":      0,
+			"channel_type":    0,
+			"price_sync":      false,
+			"upstream_kind":   "",
+			"probe":           nil,
+		})
+		return
+	}
+
+	// 分支 B：首次入驻 / 扩容（新建渠道并关联专属分组或号池）
+	poolsToUse := make([]string, 0, len(req.Pools)+1)
+	seenPools := make(map[string]bool)
+	for _, p := range req.Pools {
+		if trimmed := strings.TrimSpace(p); trimmed != "" && !seenPools[trimmed] {
+			seenPools[trimmed] = true
+			poolsToUse = append(poolsToUse, trimmed)
+		}
+	}
+
 	var quotes []merchantModelQuote
 	models := make([]string, 0)
 	var probe *service.UpstreamProbe
@@ -1315,13 +1733,25 @@ func ReviewMerchantApplication(c *gin.Context) {
 	priceSyncEnabled := false
 	var modelMappingJSON *string
 	if approve {
-		if len(req.Pools) == 0 {
+		if targetGroup != "" {
+			if err := validateMerchantGroupOwnership(preview.UserId, targetGroup, false); err != nil {
+				writeMerchantGroupValidationError(c, err)
+				return
+			}
+			if len(poolsToUse) == 0 {
+				poolsToUse = []string{targetGroup}
+			}
+		}
+		if len(poolsToUse) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "审核通过时必须勾选至少一个号池"})
 			return
 		}
-		// 号池即渠道分组：不存在的分组会让渠道挂进"死池"，没有用户组能匹配到它。
+		// 号池即渠道分组：未注册的目标自定义分组将在下文同步生成，其他号池必须已存在。
 		knownPools := ratio_setting.GetGroupRatioCopy()
-		for _, pool := range req.Pools {
+		for _, pool := range poolsToUse {
+			if targetGroup != "" && pool == targetGroup {
+				continue
+			}
 			if _, ok := knownPools[pool]; !ok {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "号池（分组）不存在：" + pool})
 				return
@@ -1352,8 +1782,6 @@ func ReviewMerchantApplication(c *gin.Context) {
 				return
 			}
 		}
-		// 官方模型名去重后写入渠道；商家对接的"官方名 → 上游名"生成 model_mapping，
-		// 名称一致的条目不需要映射。
 		seenModels := make(map[string]bool)
 		modelMapping := make(map[string]string)
 		for _, q := range quotes {
@@ -1367,7 +1795,6 @@ func ReviewMerchantApplication(c *gin.Context) {
 			}
 		}
 		if len(models) == 0 {
-			// Sub2API 等无价格接口的网关：用商家密钥探测出的模型清单作为渠道模型。
 			models = probe.Models
 		}
 		if len(models) > merchantChannelModelLimit {
@@ -1380,8 +1807,6 @@ func ReviewMerchantApplication(c *gin.Context) {
 			})
 			return
 		}
-		// 渠道模型必须是平台可计费的（固定价格/模型倍率/阶梯计费任一），
-		// 否则路由选中后客户请求会撞上"价格未配置"。逗号同样在此兜底拦截。
 		for _, name := range models {
 			if strings.ContainsAny(name, ", \t\r\n") {
 				c.JSON(http.StatusBadRequest, gin.H{
@@ -1410,8 +1835,6 @@ func ReviewMerchantApplication(c *gin.Context) {
 				logger.LogWarn(c.Request.Context(), "merchant review: marshal model mapping failed: "+mapErr.Error())
 			}
 		}
-		// 只有具备可自动读取价格接口的上游才默认开启自动报价同步：
-		// New API 需落到 New API 渠道类型，OpenAI /v1/models 报价协议走 OpenAI 兼容中继。
 		priceSyncEnabled = probe.PriceSyncCapable &&
 			(channelType == constant.ChannelTypeNewAPI ||
 				probe.PriceSyncProtocol == string(service.UpstreamKindOpenAIModelsPricing))
@@ -1420,10 +1843,8 @@ func ReviewMerchantApplication(c *gin.Context) {
 		}
 	}
 
-	// 分组归属天然对齐：盘口不再由商家填写，而是直接从渠道的 Group 字段派生，
-	// 因此"显示的盘口"与"计费的分组"必然一致，不再需要人工对齐。
-
-	// 审核与派生数据（渠道/盘口/资料/钱包/角色）必须同一事务，避免半成品商家。
+	// 审核与派生数据（渠道/资料/钱包/角色）同一事务，避免半成品商家。
+	// 原生分组 Option 写入与派生盘口重建放在事务提交后执行，避免 SQLite 嵌套事务锁死。
 	var channelId int
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		app, err := model.GetMerchantApplicationForUpdate(tx, appId)
@@ -1442,6 +1863,10 @@ func ReviewMerchantApplication(c *gin.Context) {
 			return tx.Save(app).Error
 		}
 		app.Status = model.MerchantApplicationApproved
+		app.GroupName = targetGroup
+		app.GroupDesc = targetDesc
+		app.JoinAutoGroup = joinAuto
+		app.RateMultiplier = rateMultiplier
 		if probe != nil {
 			app.UpstreamKind = string(probe.Kind)
 		}
@@ -1456,7 +1881,7 @@ func ReviewMerchantApplication(c *gin.Context) {
 			CreatedTime:       time.Now().Unix(),
 			BaseURL:           &app.SiteUrl,
 			Models:            strings.Join(models, ","),
-			Group:             strings.Join(req.Pools, ","),
+			Group:             strings.Join(poolsToUse, ","),
 			MerchantId:        app.UserId,
 			PriceSync:         &priceSync,
 			PriceSyncProtocol: probe.PriceSyncProtocol,
@@ -1470,11 +1895,6 @@ func ReviewMerchantApplication(c *gin.Context) {
 			return fmt.Errorf("创建渠道失败: %w", err)
 		}
 		channelId = channel.Id
-
-		// 盘口由「平台标准倍率 × 渠道倍率」派生，商家不填价格。
-		if err := model.RebuildChannelQuotesWithTx(tx, channel); err != nil {
-			return fmt.Errorf("派生渠道盘口失败: %w", err)
-		}
 
 		now := time.Now().Unix()
 
@@ -1520,14 +1940,29 @@ func ReviewMerchantApplication(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// 新商家渠道 + abilities 刚落库，立即刷新内存渠道缓存保证可路由
-	model.InitChannelCache()
+	if approve {
+		if targetGroup != "" && slices.Contains(poolsToUse, targetGroup) {
+			if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, preview.SiteName); err != nil {
+				common.ApiError(c, fmt.Errorf("同步商家分组配置失败: %w", err))
+				return
+			}
+		}
+		if err := model.RebuildChannelQuotes(channelId); err != nil {
+			common.ApiError(c, fmt.Errorf("派生渠道盘口失败: %w", err))
+			return
+		}
+		model.InitChannelCache()
+	}
 	common.ApiSuccess(c, gin.H{
-		"channel_id":    channelId,
-		"channel_type":  channelType,
-		"price_sync":    priceSyncEnabled,
-		"upstream_kind": appUpstreamKind(probe),
-		"probe":         probe,
+		"app_type":        model.MerchantAppTypeChannel,
+		"group_name":      targetGroup,
+		"rate_multiplier": rateMultiplier,
+		"join_auto_group": joinAuto,
+		"channel_id":      channelId,
+		"channel_type":    channelType,
+		"price_sync":      priceSyncEnabled,
+		"upstream_kind":   appUpstreamKind(probe),
+		"probe":           probe,
 	})
 }
 

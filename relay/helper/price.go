@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
@@ -63,52 +62,6 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 	return groupRatioInfo
 }
 
-// requestChannelID 解析本次请求命中的渠道 ID。主计费发生在重试循环之前，
-// 此时 ChannelMeta 尚未初始化，需回退读 distributor 预先写入的上下文键。
-func requestChannelID(c *gin.Context, info *relaycommon.RelayInfo) int {
-	if id := info.GetChannelID(); id > 0 {
-		return id
-	}
-	return common.GetContextKeyInt(c, constant.ContextKeyChannelId)
-}
-
-// ApplyChannelRate 把 PriceData（及 tiered 快照）重估到指定渠道的费率乘数。
-// 首次计费按 distributor 选中的渠道定价；重试换渠道后调用，使扣费口径跟随
-// 实际服务渠道，该渠道商家的分润也按其自身挂牌倍率结算。
-// 预扣保持首次额度不回改（与分组倍率按次刷新的行为一致），由 SettleBilling
-// 按「实扣 - 预扣」多退少补。
-func ApplyChannelRate(relayInfo *relaycommon.RelayInfo, channelId int) {
-	if relayInfo == nil || channelId <= 0 {
-		return
-	}
-	newRate := model.GetChannelRateMultiplierById(channelId)
-	oldRate := relayInfo.PriceData.ChannelRate
-	if oldRate <= 0 {
-		oldRate = 1
-	}
-	relayInfo.PriceData.ChannelRate = newRate
-	if newRate == oldRate {
-		return
-	}
-	factor := newRate / oldRate
-	relayInfo.PriceData.ModelRatio *= factor
-	relayInfo.PriceData.ModelPrice *= factor
-	relayInfo.ImageQuotaBeforeGroup *= factor
-
-	if snap := relayInfo.TieredBillingSnapshot; snap != nil && snap.BillingMode == billing_setting.BillingModeTieredExpr {
-		snapOldRate := snap.ChannelRate
-		if snapOldRate <= 0 {
-			snapOldRate = 1
-		}
-		snap.ChannelRate = newRate
-		snap.EstimatedQuotaBeforeGroup *= newRate / snapOldRate
-		// AfterGroup 与 refreshTieredBillingGroup 同口径重算，预扣基准随渠道同步
-		if afterGroup, err := billingexpr.QuotaRoundStrict(snap.EstimatedQuotaBeforeGroup * snap.GroupRatio); err == nil {
-			snap.EstimatedQuotaAfterGroup = afterGroup
-		}
-	}
-}
-
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
 	if info != nil {
 		if matched := resolveBillingModelName(info.GetOriginModelName()); matched != "" && matched != info.OriginModelName {
@@ -119,10 +72,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	modelPrice, usePrice := ratio_setting.GetModelPrice(billingModelName, false)
 
 	groupRatioInfo := HandleGroupRatio(c, info)
-	// 渠道费率乘数：把商家渠道倍率乘进客户价格，使扣费口径与行情挂牌一致。
-	// 平台渠道倍率为 1，行为不变；读取失败同样退化为 1（平台标准价）。
-	// 重试换渠道时由 ApplyChannelRate 按实际服务渠道重估（见 controller/relay.go getChannel）。
-	channelRate := model.GetChannelRateMultiplierById(requestChannelID(c, info))
 
 	// Check if this model uses tiered_expr billing
 	if billing_setting.GetBillingMode(billingModelName) == billing_setting.BillingModeTieredExpr {
@@ -159,7 +108,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 				return hosttypes.PriceData{}, modelPriceNotConfiguredError(c, matchName, info.UserId)
 			}
 		}
-		modelRatio *= channelRate
 		completionRatio = ratio_setting.GetCompletionRatio(billingModelName)
 		cacheRatio, _ = ratio_setting.GetCacheRatio(billingModelName)
 		cacheCreationRatio, _ = ratio_setting.GetCreateCacheRatio(billingModelName)
@@ -183,7 +131,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		if meta.ImagePriceRatio != 0 {
 			modelPrice = modelPrice * meta.ImagePriceRatio
 		}
-		modelPrice *= channelRate
 		if _, image := info.Request.(*dto.ImageRequest); image {
 			info.ImageQuotaBeforeGroup = modelPrice * common.QuotaPerUnit
 		}
@@ -212,7 +159,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		FreeModel:             freeModel,
 		ModelPrice:            modelPrice,
 		ModelRatio:            modelRatio,
-		ChannelRate:           channelRate,
 		CompletionRatio:       completionRatio,
 		GroupRatioInfo:        groupRatioInfo,
 		UsePrice:              usePrice,
@@ -266,8 +212,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 // ModelPriceHelperPerCall 按次/按量计费的 PriceHelper (MJ、Task)
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, error) {
 	groupRatioInfo := HandleGroupRatio(c, info)
-	// 渠道费率乘数：与文本路径一致，把商家渠道倍率乘进按次计费价格。
-	channelRate := model.GetChannelRateMultiplierById(requestChannelID(c, info))
 
 	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
 	usePrice := success
@@ -296,7 +240,6 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 	freeModel := false
 
 	if usePrice {
-		modelPrice *= channelRate
 		var err error
 		quota, err = common.QuotaFromFloatStrict(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		if err != nil {
@@ -310,7 +253,6 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 		}
 	} else {
 		// 按量计费：以模型倍率的一半作为预扣额度
-		modelRatio *= channelRate
 		var err error
 		quota, err = common.QuotaFromFloatStrict(modelRatio / 2 * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		if err != nil {
@@ -329,7 +271,6 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 		FreeModel:      freeModel,
 		ModelPrice:     modelPrice,
 		ModelRatio:     modelRatio,
-		ChannelRate:    channelRate,
 		UsePrice:       usePrice,
 		Quota:          quota,
 		GroupRatioInfo: groupRatioInfo,
@@ -440,8 +381,6 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	if err != nil {
 		return hosttypes.PriceData{}, err
 	}
-	// 渠道费率乘数：预扣与结算（quotaConversion）各乘一次，保持口径一致。
-	channelRate := model.GetChannelRateMultiplierById(requestChannelID(c, info))
 
 	requestInput, err := ResolveIncomingBillingExprRequestInput(c, info, usedVars["param"])
 	if err != nil {
@@ -464,8 +403,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	}
 
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
-	// 渠道费率乘数在此与快照 ChannelRate 各生效一次：预扣走 quotaBeforeGroup，结算走 quotaConversion。
-	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit * channelRate
+	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit
 	// Scale the reservation, preserving the expression's context-length tier
 	// and leaving actual settlement and fixed request prices unchanged.
 	if trace.BillingUnit != billingexpr.BillingUnitRequest {
@@ -500,7 +438,6 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		EstimatedBillingUnit:      trace.BillingUnit,
 		EstimatedFixedPrice:       trace.FixedPrice,
 		QuotaPerUnit:              common.QuotaPerUnit,
-		ChannelRate:               channelRate,
 		ExprVersion:               billingexpr.ExprVersion(exprStr),
 	}
 	info.TieredBillingSnapshot = snapshot
@@ -508,7 +445,6 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 
 	priceData := hosttypes.PriceData{
 		FreeModel:         freeModel,
-		ChannelRate:       channelRate,
 		GroupRatioInfo:    groupRatioInfo,
 		QuotaToPreConsume: preConsumedQuota,
 	}

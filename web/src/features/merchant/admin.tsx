@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { getChannelTypeLabel } from '@/features/channels/lib/channel-utils'
@@ -256,12 +257,35 @@ function OverviewTab() {
   )
 }
 
+function formatReviewResultSummary(
+  result: MerchantReviewResult,
+  t: (key: string, opts?: Record<string, string>) => string
+): string {
+  if (result.app_type === 'group_change') {
+    const rateText =
+      typeof result.rate_multiplier === 'number'
+        ? result.rate_multiplier.toFixed(2)
+        : '1.00'
+    const autoText = result.join_auto_group
+      ? '，已纳入 Auto 路由'
+      : '，未纳入 Auto 路由'
+    return `已更新分组 ${result.group_name ?? ''}（倍率 ×${rateText}${autoText}）`
+  }
+  return t('Channel {{id}} created as {{type}}', {
+    id: String(result.channel_id),
+    type: t(getChannelTypeLabel(result.channel_type)),
+  })
+}
+
 function ApplicationsTab() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [reviewing, setReviewing] = useState<MerchantApplication | null>(null)
   const [pools, setPools] = useState('default')
+  const [groupName, setGroupName] = useState('')
+  const [groupDesc, setGroupDesc] = useState('')
+  const [joinAutoGroup, setJoinAutoGroup] = useState(false)
   const [profitRatio, setProfitRatio] = useState('0.95')
   const [note, setNote] = useState('')
   const [upstreamKind, setUpstreamKind] = useState<string>(UPSTREAM_KIND_AUTO)
@@ -294,6 +318,10 @@ function ApplicationsTab() {
     setUpstreamKind(UPSTREAM_KIND_AUTO)
     setChannelType(FOLLOW_PROBE)
     setPriceSync('auto')
+    setGroupName(application.group_name ?? '')
+    setGroupDesc(application.group_desc ?? '')
+    setJoinAutoGroup(Boolean(application.join_auto_group))
+    setPools(application.group_name ? application.group_name : 'default')
     // 倍率默认回填申请值，管理员可直接沿用或覆盖
     setRateMultiplier(
       typeof application.rate_multiplier === 'number'
@@ -306,24 +334,35 @@ function ApplicationsTab() {
   async function review(action: 'approve' | 'reject') {
     if (!reviewing) return
     const approve = action === 'approve'
+    const isGroupChange = reviewing.app_type === 'group_change'
     try {
       const result = await reviewMerchantApplication(reviewing.id, {
         action,
         review_note: note,
-        pools: approve
-          ? pools
-              .split(',')
-              .map((p) => p.trim())
-              .filter(Boolean)
+        pools:
+          approve && !isGroupChange
+            ? pools
+                .split(',')
+                .map((p) => p.trim())
+                .filter(Boolean)
+            : undefined,
+        group_name:
+          approve && groupName.trim() !== '' ? groupName.trim() : undefined,
+        group_desc: approve ? groupDesc.trim() : undefined,
+        join_auto_group: approve ? joinAutoGroup : undefined,
+        profit_ratio:
+          approve && !isGroupChange ? Number(profitRatio) || 0.95 : undefined,
+        upstream_kind: !isGroupChange
+          ? toUpstreamKind(upstreamKind)
           : undefined,
-        profit_ratio: approve ? Number(profitRatio) || 0.95 : undefined,
-        upstream_kind: toUpstreamKind(upstreamKind),
         channel_type:
-          approve && channelType !== FOLLOW_PROBE
+          approve && !isGroupChange && channelType !== FOLLOW_PROBE
             ? Number(channelType)
             : undefined,
         price_sync:
-          approve && priceSync !== 'auto' ? priceSync === 'on' : undefined,
+          approve && !isGroupChange && priceSync !== 'auto'
+            ? priceSync === 'on'
+            : undefined,
         // 倍率留空表示不覆盖商家申请值，交由后端沿用
         rate_multiplier:
           approve && rateMultiplier.trim() !== ''
@@ -335,6 +374,9 @@ function ApplicationsTab() {
       setLastReview(approve ? result : null)
       queryClient.invalidateQueries({
         queryKey: ['merchant-admin', 'applications'],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['merchant-admin', 'overview'],
       })
     } catch (error) {
       handleServerError(error, t('Failed to review application'))
@@ -370,19 +412,16 @@ function ApplicationsTab() {
         <Alert>
           <AlertTitle>{t('Last review result')}</AlertTitle>
           <AlertDescription className='space-y-1'>
-            <p>
-              {t('Channel {{id}} created as {{type}}', {
-                id: String(lastReview.channel_id),
-                type: t(getChannelTypeLabel(lastReview.channel_type)),
-              })}
-            </p>
-            <p>
-              {lastReview.price_sync
-                ? t('Automatic price sync is enabled for this channel.')
-                : t(
-                    'Automatic price sync is disabled: this upstream exposes no price API, so keep the channel quotes updated manually.'
-                  )}
-            </p>
+            <p>{formatReviewResultSummary(lastReview, t)}</p>
+            {lastReview.app_type !== 'group_change' && (
+              <p>
+                {lastReview.price_sync
+                  ? t('Automatic price sync is enabled for this channel.')
+                  : t(
+                      'Automatic price sync is disabled: this upstream exposes no price API, so keep the channel quotes updated manually.'
+                    )}
+              </p>
+            )}
             {(lastReview.probe?.warnings ?? []).length > 0 && (
               <ul className='list-disc space-y-1 pl-4'>
                 {(lastReview.probe?.warnings ?? []).map((warning) => (
@@ -395,9 +434,9 @@ function ApplicationsTab() {
       )}
 
       <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1fr_1fr_1fr_1fr_auto_auto] gap-2 border-b px-3 py-2 text-xs'>
+        <div className='text-muted-foreground grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] gap-2 border-b px-3 py-2 text-xs'>
           <span>{t('Site')}</span>
-          <span>{t('Upstream type')}</span>
+          <span>{t('类型 / 分组与倍率')}</span>
           <span>{t('Applicant')}</span>
           <span>{t('Time')}</span>
           <span>{t('Status')}</span>
@@ -407,7 +446,7 @@ function ApplicationsTab() {
           {items.map((a) => (
             <div
               key={a.id}
-              className='grid grid-cols-[1fr_1fr_1fr_1fr_auto_auto] items-center gap-2 px-3 py-2 text-sm'
+              className='grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] items-center gap-2 px-3 py-2 text-sm'
             >
               <a
                 href={a.site_url}
@@ -417,9 +456,27 @@ function ApplicationsTab() {
               >
                 {a.site_name}
               </a>
-              <span className='truncate'>
-                {t(upstreamKindLabelKey(a.upstream_kind))}
-              </span>
+              <div className='flex flex-wrap items-center gap-1 text-xs'>
+                <Badge variant='outline'>
+                  {a.app_type === 'group_change'
+                    ? t('分组变更')
+                    : t('新渠道/分组')}
+                </Badge>
+                {a.group_name && (
+                  <span className='font-mono font-medium'>{a.group_name}</span>
+                )}
+                <Badge variant='secondary'>
+                  {`×${(a.rate_multiplier || 1).toFixed(2)}`}
+                </Badge>
+                {a.join_auto_group && (
+                  <Badge variant='secondary'>Auto</Badge>
+                )}
+                {a.app_type !== 'group_change' && (
+                  <span className='text-muted-foreground truncate'>
+                    {t(upstreamKindLabelKey(a.upstream_kind))}
+                  </span>
+                )}
+              </div>
               <span>#{a.user_id}</span>
               <span className='text-muted-foreground'>
                 {formatTimestampToDate(a.created_at)}
@@ -438,15 +495,17 @@ function ApplicationsTab() {
               <span className='flex w-32 justify-end gap-1'>
                 {a.status === 0 && (
                   <>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      className='h-7'
-                      disabled={probeLoading}
-                      onClick={() => runProbe(a)}
-                    >
-                      {t('Probe')}
-                    </Button>
+                    {a.app_type !== 'group_change' && (
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='h-7'
+                        disabled={probeLoading}
+                        onClick={() => runProbe(a)}
+                      >
+                        {t('Probe')}
+                      </Button>
+                    )}
                     <Button
                       size='sm'
                       variant='outline'
@@ -500,141 +559,190 @@ function ApplicationsTab() {
           </DialogHeader>
           <div className='space-y-3'>
             <div className='rounded-md border p-2 text-xs'>
-              <p className='mb-1 font-medium'>{t('Requested models')}</p>
-              {quotes.map((q) => (
-                <p key={q.model} className='font-mono'>
-                  {q.model}
-                  {q.pool ? `, ${q.pool}` : ''}
-                </p>
-              ))}
-              {!quotes.length && (
-                <p className='text-muted-foreground'>
-                  {t(
-                    'No models declared: the channel model list is filled from the site key at review time.'
-                  )}
-                </p>
-              )}
+              <p className='font-medium'>
+                {reviewing?.app_type === 'group_change'
+                  ? t('专属分组倍率 / Auto 路由变更申请')
+                  : t('新渠道与分组入驻申请')}
+              </p>
               <p className='text-muted-foreground mt-1'>
-                {t('Requested rate multiplier')}:{' '}
+                {t('目标专属分组')}：{' '}
+                <span className='font-mono'>
+                  {reviewing?.group_name || '--'}
+                </span>
+                {' · '}
+                {t('申请倍率')}：{' '}
                 {typeof reviewing?.rate_multiplier === 'number'
                   ? `${reviewing.rate_multiplier.toFixed(4)}x`
                   : '--'}
+                {' · '}
+                Auto：{' '}
+                {reviewing?.join_auto_group ? t('申请加入') : t('不加入')}
               </p>
             </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-upstream-kind'>
-                {t('Upstream type')}
-              </Label>
-              <Select
-                items={REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => ({
-                  value: option.value,
-                  label: t(option.labelKey),
-                }))}
-                value={upstreamKind}
-                onValueChange={(next) => {
-                  if (next !== null) setUpstreamKind(next)
-                }}
-              >
-                <SelectTrigger
-                  id='merchant-review-upstream-kind'
-                  className='w-full'
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false}>
-                  {REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {t(option.labelKey)}
-                    </SelectItem>
+
+            {reviewing?.app_type !== 'group_change' && (
+              <>
+                <div className='rounded-md border p-2 text-xs'>
+                  <p className='mb-1 font-medium'>{t('Requested models')}</p>
+                  {quotes.map((q) => (
+                    <p key={q.model} className='font-mono'>
+                      {q.model}
+                      {q.pool ? `, ${q.pool}` : ''}
+                    </p>
                   ))}
-                </SelectContent>
-              </Select>
+                  {!quotes.length && (
+                    <p className='text-muted-foreground'>
+                      {t(
+                        'No models declared: the channel model list is filled from the site key at review time.'
+                      )}
+                    </p>
+                  )}
+                </div>
+                <div className='space-y-1.5'>
+                  <Label htmlFor='merchant-review-upstream-kind'>
+                    {t('Upstream type')}
+                  </Label>
+                  <Select
+                    items={REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => ({
+                      value: option.value,
+                      label: t(option.labelKey),
+                    }))}
+                    value={upstreamKind}
+                    onValueChange={(next) => {
+                      if (next !== null) setUpstreamKind(next)
+                    }}
+                  >
+                    <SelectTrigger
+                      id='merchant-review-upstream-kind'
+                      className='w-full'
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent alignItemWithTrigger={false}>
+                      {REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {t(option.labelKey)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className='space-y-1.5'>
+                  <Label htmlFor='merchant-review-channel-type'>
+                    {t('Channel type')}
+                  </Label>
+                  <Select
+                    items={channelTypeItems}
+                    value={channelType}
+                    onValueChange={(next) => {
+                      if (next !== null) setChannelType(next)
+                    }}
+                  >
+                    <SelectTrigger
+                      id='merchant-review-channel-type'
+                      className='w-full'
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent alignItemWithTrigger={false}>
+                      {channelTypeItems.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className='space-y-1.5'>
+                  <Label>{t('Price sync')}</Label>
+                  <ToggleGroup
+                    value={[priceSync]}
+                    onValueChange={(values) => {
+                      const choice = PRICE_SYNC_OPTIONS.find(
+                        (option) => option.value === values[0]
+                      )
+                      if (choice) setPriceSync(choice.value)
+                    }}
+                    variant='outline'
+                    size='sm'
+                    aria-label={t('Price sync')}
+                  >
+                    {PRICE_SYNC_OPTIONS.map((option) => (
+                      <ToggleGroupItem key={option.value} value={option.value}>
+                        {t(option.labelKey)}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                </div>
+                <div className='space-y-1.5'>
+                  <Label htmlFor='merchant-review-pools'>
+                    {t('Pools (comma separated)')}
+                  </Label>
+                  <Input
+                    id='merchant-review-pools'
+                    value={pools}
+                    onChange={(e) => setPools(e.target.value)}
+                    placeholder={t('gpt-pro, gpt-plus')}
+                  />
+                </div>
+                <div className='space-y-1.5'>
+                  <Label htmlFor='merchant-review-profit-ratio'>
+                    {t('Profit ratio (0~1)')}
+                  </Label>
+                  <Input
+                    id='merchant-review-profit-ratio'
+                    value={profitRatio}
+                    onChange={(e) => setProfitRatio(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+
+            <div className='grid gap-3 sm:grid-cols-2'>
+              <div className='space-y-1.5'>
+                <Label htmlFor='merchant-review-group-name'>
+                  {t('专属分组名称')}
+                </Label>
+                <Input
+                  id='merchant-review-group-name'
+                  value={groupName}
+                  readOnly={reviewing?.app_type === 'group_change'}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  placeholder='my-shop-vip'
+                />
+              </div>
+              <div className='space-y-1.5'>
+                <Label htmlFor='merchant-review-rate-multiplier'>
+                  {t('分组倍率（GroupRatio）')}
+                </Label>
+                <Input
+                  id='merchant-review-rate-multiplier'
+                  type='number'
+                  step='0.01'
+                  value={rateMultiplier}
+                  onChange={(e) => setRateMultiplier(e.target.value)}
+                  placeholder={t('Leave empty to keep the requested value')}
+                />
+              </div>
             </div>
             <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-channel-type'>
-                {t('Channel type')}
-              </Label>
-              <Select
-                items={channelTypeItems}
-                value={channelType}
-                onValueChange={(next) => {
-                  if (next !== null) setChannelType(next)
-                }}
-              >
-                <SelectTrigger
-                  id='merchant-review-channel-type'
-                  className='w-full'
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false}>
-                  {channelTypeItems.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className='space-y-1.5'>
-              <Label>{t('Price sync')}</Label>
-              <ToggleGroup
-                value={[priceSync]}
-                onValueChange={(values) => {
-                  const choice = PRICE_SYNC_OPTIONS.find(
-                    (option) => option.value === values[0]
-                  )
-                  if (choice) setPriceSync(choice.value)
-                }}
-                variant='outline'
-                size='sm'
-                aria-label={t('Price sync')}
-              >
-                {PRICE_SYNC_OPTIONS.map((option) => (
-                  <ToggleGroupItem key={option.value} value={option.value}>
-                    {t(option.labelKey)}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-pools'>
-                {t('Pools (comma separated)')}
-              </Label>
+              <Label htmlFor='merchant-review-group-desc'>{t('分组说明')}</Label>
               <Input
-                id='merchant-review-pools'
-                value={pools}
-                onChange={(e) => setPools(e.target.value)}
-                placeholder={t('gpt-pro, gpt-plus')}
+                id='merchant-review-group-desc'
+                value={groupDesc}
+                onChange={(e) => setGroupDesc(e.target.value)}
+                placeholder={t('向终端用户展示的分组说明')}
               />
             </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-profit-ratio'>
-                {t('Profit ratio (0~1)')}
+            <div className='flex items-center justify-between gap-3 rounded-md border px-3 py-2'>
+              <Label htmlFor='merchant-review-join-auto'>
+                {t('加入 Auto 自动路由组（AutoGroups）')}
               </Label>
-              <Input
-                id='merchant-review-profit-ratio'
-                value={profitRatio}
-                onChange={(e) => setProfitRatio(e.target.value)}
+              <Switch
+                id='merchant-review-join-auto'
+                checked={joinAutoGroup}
+                onCheckedChange={setJoinAutoGroup}
               />
-            </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-rate-multiplier'>
-                {t('Channel Rate Multiplier')}
-              </Label>
-              <Input
-                id='merchant-review-rate-multiplier'
-                type='number'
-                step='0.0001'
-                value={rateMultiplier}
-                onChange={(e) => setRateMultiplier(e.target.value)}
-                placeholder={t('Leave empty to keep the requested value')}
-              />
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Discount factor relative to the platform standard price: 0.1 means 10% of it.'
-                )}
-              </p>
             </div>
             <div className='space-y-1.5'>
               <Label htmlFor='merchant-review-note'>{t('Review Note')}</Label>
