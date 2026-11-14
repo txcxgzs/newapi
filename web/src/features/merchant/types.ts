@@ -345,6 +345,46 @@ export interface MerchantPortalQuote extends ChannelQuote {
   channel_name: string
   channel_rate_multiplier: number
   platform_model_ratio: number
+  ttft_ema_ms?: number
+  tps_ema?: number
+  success_ema?: number
+  sample_count?: number
+}
+
+export interface MerchantBiddingEntry {
+  channel_id: number
+  channel_name: string
+  pool_group: string
+  model_name: string
+  my_input_price: number
+  my_output_price: number
+  my_blended_price: number
+  quote_source: string
+  my_ttft_ms: number
+  my_tps: number
+  my_success_rate: number
+  sample_count: number
+  market_min_price: number
+  market_best_ttft_ms: number
+  competitor_count: number
+  my_price_rank: number
+  my_price_ttft_rank: number
+  price_gap_pct: number
+}
+
+export interface MerchantBiddingResponse {
+  active_strategy: string
+  items: MerchantBiddingEntry[]
+}
+
+export interface MerchantRateUpdateResult {
+  pending_review: boolean
+  applied: boolean
+  group_name: string
+  group_desc: string
+  rate_multiplier: number
+  join_auto_group: boolean
+  affected_channels: number
 }
 
 /** 商家在某个分组下的单个渠道（池子）。 */

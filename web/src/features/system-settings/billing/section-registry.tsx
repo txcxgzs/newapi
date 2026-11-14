@@ -41,6 +41,23 @@ const getModelDefaults = (settings: BillingSettings) => ({
   PluginBillingExpr: settings['billing_setting.plugin_billing_expr'],
 })
 
+const AUTO_ROUTING_STRATEGIES = [
+  'order',
+  'round_robin',
+  'lowest_price',
+  'merchant_first',
+  'price_ttft',
+  'lowest_ttft',
+] as const
+
+type AutoRoutingStrategy = (typeof AUTO_ROUTING_STRATEGIES)[number]
+
+function normalizeAutoRoutingStrategy(value?: string): AutoRoutingStrategy {
+  return (AUTO_ROUTING_STRATEGIES as readonly string[]).includes(value ?? '')
+    ? (value as AutoRoutingStrategy)
+    : 'order'
+}
+
 const getGroupDefaults = (settings: BillingSettings) => ({
   TopupGroupRatio: settings.TopupGroupRatio,
   GroupRatio: settings.GroupRatio,
@@ -49,6 +66,10 @@ const getGroupDefaults = (settings: BillingSettings) => ({
   AutoGroups: settings.AutoGroups,
   MaxTokenAutoGroups: settings.MaxTokenAutoGroups,
   DefaultUseAutoGroup: settings.DefaultUseAutoGroup,
+  AutoRoutingStrategy: normalizeAutoRoutingStrategy(
+    settings.AutoRoutingStrategy
+  ),
+  AutoIncludeMerchantGroups: settings.AutoIncludeMerchantGroups ?? false,
   GroupSpecialUsableGroup:
     settings['group_ratio_setting.group_special_usable_group'],
 })

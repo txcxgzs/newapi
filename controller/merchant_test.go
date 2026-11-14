@@ -435,7 +435,7 @@ func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
 	assert.InDelta(t, 3.0, repricedQuote.InputPrice, 1e-9)
 	assert.InDelta(t, 9.0, repricedQuote.OutputPrice, 1e-9)
 
-	// 3. 商家提交分组倍率 / Auto 路由变更申请（未审核前不得直接生效）
+	// 3. 商家提交分组倍率 / Auto 路由变更（无需管理员审核，立即生效并重算派生盘口）
 	rateRecorder := httptest.NewRecorder()
 	rateCtx, _ := gin.CreateTestContext(rateRecorder)
 	rateCtx.Set("id", 201)
@@ -445,25 +445,20 @@ func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
 	UpdateMerchantPortalRate(rateCtx)
 	require.Equal(t, http.StatusOK, rateRecorder.Code, rateRecorder.Body.String())
 
-	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio(prefixedGroup), 1e-9)
-	assert.True(t, setting.ContainsAutoGroup(prefixedGroup))
-
-	var changeApp model.MerchantApplication
-	require.NoError(t, db.Where("user_id = ? AND app_type = ? AND status = ?", 201, model.MerchantAppTypeGroupChange, model.MerchantApplicationPending).First(&changeApp).Error)
-	assert.Equal(t, prefixedGroup, changeApp.GroupName)
-	assert.InDelta(t, 0.8, changeApp.RateMultiplier, 1e-9)
-	assert.False(t, changeApp.JoinAutoGroup)
-
-	// 4. 管理员审核通过 group_change：更新原生配置、退出 AutoGroups 并重算派生盘口
-	changeReviewRecorder := performReviewRequest(t, changeApp.Id, `{"action":"approve","review_note":"ok","rate_multiplier":0.8,"group_desc":"Alpha Updated","join_auto_group":false}`)
-	require.Equal(t, http.StatusOK, changeReviewRecorder.Code, changeReviewRecorder.Body.String())
-
-	var changeReviewResp struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
+	var rateResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			PendingReview  bool    `json:"pending_review"`
+			Applied        bool    `json:"applied"`
+			GroupName      string  `json:"group_name"`
+			RateMultiplier float64 `json:"rate_multiplier"`
+			JoinAutoGroup  bool    `json:"join_auto_group"`
+		} `json:"data"`
 	}
-	require.NoError(t, json.Unmarshal(changeReviewRecorder.Body.Bytes(), &changeReviewResp))
-	assert.True(t, changeReviewResp.Success, changeReviewRecorder.Body.String())
+	require.NoError(t, json.Unmarshal(rateRecorder.Body.Bytes(), &rateResp))
+	assert.True(t, rateResp.Success, rateRecorder.Body.String())
+	assert.False(t, rateResp.Data.PendingReview)
+	assert.True(t, rateResp.Data.Applied)
 
 	assert.InDelta(t, 0.8, ratio_setting.GetGroupRatio(prefixedGroup), 1e-9)
 	assert.Equal(t, "Alpha Updated", setting.GetUserUsableGroupsCopy()[prefixedGroup])
@@ -474,4 +469,52 @@ func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
 	assert.InDelta(t, 2.0, updatedQuote.RateMultiplier, 1e-9)
 	assert.InDelta(t, 4.0, updatedQuote.InputPrice, 1e-9)
 	assert.InDelta(t, 16.0, updatedQuote.OutputPrice, 1e-9)
+
+	// 4. 商家按模型实时出价 & Order-Book 竞价面板读取
+	bidRecorder := httptest.NewRecorder()
+	bidCtx, _ := gin.CreateTestContext(bidRecorder)
+	bidCtx.Set("id", 201)
+	bidCtx.Request = httptest.NewRequest(http.MethodPut, "/api/merchant/portal/quotes", strings.NewReader(fmt.Sprintf(
+		`{"channel_id":%d,"pool_group":%q,"model_name":"gpt-5.6","input_price":1.5,"output_price":3.0}`,
+		channel.Id, prefixedGroup)))
+	bidCtx.Request.Header.Set("Content-Type", "application/json")
+	UpdateMerchantPortalQuotes(bidCtx)
+	require.Equal(t, http.StatusOK, bidRecorder.Code, bidRecorder.Body.String())
+
+	var bidQuote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, prefixedGroup, "gpt-5.6").First(&bidQuote).Error)
+	assert.Equal(t, model.QuoteSourceMerchant, bidQuote.Source)
+	assert.InDelta(t, 1.5, bidQuote.InputPrice, 1e-9)
+	assert.InDelta(t, 3.0, bidQuote.OutputPrice, 1e-9)
+
+	// 低于风控下限的恶意价格应被拒绝
+	badBidRecorder := httptest.NewRecorder()
+	badBidCtx, _ := gin.CreateTestContext(badBidRecorder)
+	badBidCtx.Set("id", 201)
+	badBidCtx.Request = httptest.NewRequest(http.MethodPut, "/api/merchant/portal/quotes", strings.NewReader(fmt.Sprintf(
+		`{"channel_id":%d,"pool_group":%q,"model_name":"gpt-5.6","input_price":0.0001,"output_price":0.0001}`,
+		channel.Id, prefixedGroup)))
+	badBidCtx.Request.Header.Set("Content-Type", "application/json")
+	UpdateMerchantPortalQuotes(badBidCtx)
+	assert.Equal(t, http.StatusBadRequest, badBidRecorder.Code)
+
+	boardRecorder := httptest.NewRecorder()
+	boardCtx, _ := gin.CreateTestContext(boardRecorder)
+	boardCtx.Set("id", 201)
+	boardCtx.Request = httptest.NewRequest(http.MethodGet, "/api/merchant/portal/bidding", nil)
+	GetMerchantPortalBidding(boardCtx)
+	require.Equal(t, http.StatusOK, boardRecorder.Code, boardRecorder.Body.String())
+	var boardResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Items []struct {
+				ModelName      string  `json:"model_name"`
+				MyBlendedPrice float64 `json:"my_blended_price"`
+				MyPriceRank    int     `json:"my_price_rank"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(boardRecorder.Body.Bytes(), &boardResp))
+	assert.True(t, boardResp.Success)
+	assert.NotEmpty(t, boardResp.Data.Items)
 }

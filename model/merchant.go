@@ -1,6 +1,13 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // 商家资料状态
 const (
@@ -159,4 +166,141 @@ func GetMerchantWithdrawalForUpdate(tx *gorm.DB, id int) (*MerchantWithdrawal, e
 		return nil, err
 	}
 	return &withdrawal, nil
+}
+
+// MerchantDisplayInfo holds lightweight cached merchant identity for order-book routing,
+// response headers, logs, and public orderbook views without hitting DB on every request.
+type MerchantDisplayInfo struct {
+	UserId       int    `json:"user_id"`
+	MerchantCode string `json:"merchant_code"`
+	DisplayName  string `json:"display_name"`
+	ShopName     string `json:"shop_name"`
+	SiteName     string `json:"site_name"`
+	Status       int    `json:"status"`
+}
+
+var (
+	merchantDisplayCacheMu     sync.RWMutex
+	merchantDisplayCache       = make(map[int]MerchantDisplayInfo)
+	merchantDisplayCacheLoaded time.Time
+)
+
+const merchantDisplayCacheTTL = 30 * time.Second
+
+func formatMerchantDisplayName(profile MerchantProfile) string {
+	if s := strings.TrimSpace(profile.ShopName); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(profile.SiteName); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(profile.MerchantCode); s != "" {
+		return s
+	}
+	if profile.UserId > 0 {
+		return fmt.Sprintf("Merchant #%d", profile.UserId)
+	}
+	return "Platform"
+}
+
+// RefreshMerchantDisplayCache reloads all merchant display entries from the DB.
+func RefreshMerchantDisplayCache() map[int]MerchantDisplayInfo {
+	if DB == nil {
+		merchantDisplayCacheMu.RLock()
+		defer merchantDisplayCacheMu.RUnlock()
+		out := make(map[int]MerchantDisplayInfo, len(merchantDisplayCache))
+		for k, v := range merchantDisplayCache {
+			out[k] = v
+		}
+		return out
+	}
+
+	var profiles []MerchantProfile
+	if err := DB.Select("user_id, merchant_code, shop_name, site_name, status").Find(&profiles).Error; err != nil {
+		merchantDisplayCacheMu.RLock()
+		defer merchantDisplayCacheMu.RUnlock()
+		out := make(map[int]MerchantDisplayInfo, len(merchantDisplayCache))
+		for k, v := range merchantDisplayCache {
+			out[k] = v
+		}
+		return out
+	}
+
+	next := make(map[int]MerchantDisplayInfo, len(profiles))
+	for _, p := range profiles {
+		if p.UserId <= 0 {
+			continue
+		}
+		next[p.UserId] = MerchantDisplayInfo{
+			UserId:       p.UserId,
+			MerchantCode: strings.TrimSpace(p.MerchantCode),
+			DisplayName:  formatMerchantDisplayName(p),
+			ShopName:     strings.TrimSpace(p.ShopName),
+			SiteName:     strings.TrimSpace(p.SiteName),
+			Status:       p.Status,
+		}
+	}
+
+	merchantDisplayCacheMu.Lock()
+	merchantDisplayCache = next
+	merchantDisplayCacheLoaded = time.Now()
+	merchantDisplayCacheMu.Unlock()
+
+	return next
+}
+
+// GetMerchantDisplayMap returns cached merchant display metadata keyed by merchant UserId.
+func GetMerchantDisplayMap() map[int]MerchantDisplayInfo {
+	merchantDisplayCacheMu.RLock()
+	fresh := !merchantDisplayCacheLoaded.IsZero() && time.Since(merchantDisplayCacheLoaded) < merchantDisplayCacheTTL
+	if fresh || DB == nil {
+		out := make(map[int]MerchantDisplayInfo, len(merchantDisplayCache))
+		for k, v := range merchantDisplayCache {
+			out[k] = v
+		}
+		merchantDisplayCacheMu.RUnlock()
+		return out
+	}
+	merchantDisplayCacheMu.RUnlock()
+	return RefreshMerchantDisplayCache()
+}
+
+// GetMerchantDisplayInfo returns cached display metadata for a merchant UserId (0 -> Platform).
+func GetMerchantDisplayInfo(merchantUserId int) MerchantDisplayInfo {
+	if merchantUserId <= 0 {
+		return MerchantDisplayInfo{
+			UserId:       0,
+			MerchantCode: "platform",
+			DisplayName:  "Platform",
+			Status:       MerchantStatusActive,
+		}
+	}
+	m := GetMerchantDisplayMap()
+	if info, ok := m[merchantUserId]; ok {
+		return info
+	}
+	return MerchantDisplayInfo{
+		UserId:       merchantUserId,
+		MerchantCode: fmt.Sprintf("m%d", merchantUserId),
+		DisplayName:  fmt.Sprintf("Merchant #%d", merchantUserId),
+		Status:       MerchantStatusActive,
+	}
+}
+
+// InvalidateMerchantDisplayCache forces the next read to reload from DB.
+func InvalidateMerchantDisplayCache() {
+	merchantDisplayCacheMu.Lock()
+	merchantDisplayCacheLoaded = time.Time{}
+	merchantDisplayCacheMu.Unlock()
+}
+
+// SetMerchantDisplayCacheForTest seeds merchant display cache entries in unit tests without DB.
+func SetMerchantDisplayCacheForTest(entries map[int]MerchantDisplayInfo) {
+	merchantDisplayCacheMu.Lock()
+	defer merchantDisplayCacheMu.Unlock()
+	merchantDisplayCache = make(map[int]MerchantDisplayInfo, len(entries))
+	for k, v := range entries {
+		merchantDisplayCache[k] = v
+	}
+	merchantDisplayCacheLoaded = time.Now()
 }

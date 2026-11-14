@@ -12,9 +12,10 @@ import (
 
 // 渠道报价来源
 const (
-	QuoteSourceAuto    = "auto"    // 定时同步上游价格（无价格接口的上游不会产生）
-	QuoteSourceDerived = "derived" // 由「平台标准倍率 × 渠道倍率」派生（商家只填倍率）
-	QuoteSourceManual  = "manual"  // 管理员手工锁定的盘口
+	QuoteSourceAuto     = "auto"     // 定时同步上游价格（无价格接口的上游不会产生）
+	QuoteSourceDerived  = "derived"  // 由「平台标准倍率 × 渠道倍率」派生（商家只填倍率）
+	QuoteSourceMerchant = "merchant" // 商家按模型自主实时改价（无需人工审核）
+	QuoteSourceManual   = "manual"   // 管理员手工锁定的盘口
 )
 
 // 渠道报价状态
@@ -166,7 +167,7 @@ func BuildDerivedQuotes(channel *Channel) []ChannelQuote {
 func CleanupStaleAutoQuotes(tx *gorm.DB, channelId int, valid map[string]bool) error {
 	var rows []ChannelQuote
 	if err := tx.Where("channel_id = ? AND source IN ?", channelId,
-		[]string{QuoteSourceAuto, QuoteSourceManual}).
+		[]string{QuoteSourceAuto, QuoteSourceMerchant, QuoteSourceManual}).
 		Find(&rows).Error; err != nil {
 		return err
 	}
@@ -222,7 +223,7 @@ func RebuildChannelQuotesWithTx(tx *gorm.DB, channel *Channel) error {
 	// 否则 upsert 会把范围内的 manual 锁定价整体冲成派生价
 	var protectedRows []ChannelQuote
 	if err := tx.Where("channel_id = ? AND source IN ?", channel.Id,
-		[]string{QuoteSourceAuto, QuoteSourceManual}).
+		[]string{QuoteSourceAuto, QuoteSourceMerchant, QuoteSourceManual}).
 		Find(&protectedRows).Error; err != nil {
 		return err
 	}
@@ -253,4 +254,165 @@ func RebuildChannelQuotes(channelId int) error {
 		return err
 	}
 	return RebuildChannelQuotesWithTx(DB, &channel)
+}
+
+// BlendedQuotePrice computes a comparable single price from input and output $/1M quotes.
+func BlendedQuotePrice(input, output float64) float64 {
+	if output <= 0 {
+		return input
+	}
+	if input <= 0 {
+		return output
+	}
+	return (input + output) / 2
+}
+
+// GetChannelQuotePricesForGroupModel returns enabled blended quote prices keyed
+// by group -> channelId for modelName (falling back to normalized model name).
+func GetChannelQuotePricesForGroupModel(groups []string, modelName string, channelIdsByGroup map[string][]int) map[string]map[int]float64 {
+	if DB == nil || len(groups) == 0 || modelName == "" {
+		return nil
+	}
+
+	allowedChannels := make(map[string]map[int]struct{}, len(groups))
+	seenChannelIDs := make(map[int]struct{})
+	allChannelIDs := make([]int, 0)
+	for _, g := range groups {
+		ids := channelIdsByGroup[g]
+		if len(ids) == 0 {
+			continue
+		}
+		set := make(map[int]struct{}, len(ids))
+		for _, id := range ids {
+			set[id] = struct{}{}
+			if _, ok := seenChannelIDs[id]; !ok {
+				seenChannelIDs[id] = struct{}{}
+				allChannelIDs = append(allChannelIDs, id)
+			}
+		}
+		allowedChannels[g] = set
+	}
+	if len(allChannelIDs) == 0 {
+		return nil
+	}
+
+	candidateModels := []string{modelName}
+	normalized := ratio_setting.RoutingMatchModelName(modelName)
+	if normalized != "" && normalized != modelName {
+		candidateModels = append(candidateModels, normalized)
+	}
+
+	var quotes []ChannelQuote
+	if err := DB.Where("pool_group IN ? AND model_name IN ? AND channel_id IN ? AND status = ?",
+		groups, candidateModels, allChannelIDs, QuoteStatusEnabled).Find(&quotes).Error; err != nil {
+		return nil
+	}
+
+	exactPrices := make(map[string]map[int]float64)
+	normalizedPrices := make(map[string]map[int]float64)
+	for _, q := range quotes {
+		groupSet, ok := allowedChannels[q.PoolGroup]
+		if !ok {
+			continue
+		}
+		if _, allowed := groupSet[q.ChannelId]; !allowed {
+			continue
+		}
+		price := BlendedQuotePrice(q.InputPrice, q.OutputPrice)
+		if price <= 0 && q.RateMultiplier > 0 {
+			price = q.RateMultiplier * QuoteRatioBase
+		}
+		if price <= 0 {
+			continue
+		}
+		target := normalizedPrices
+		if q.ModelName == modelName {
+			target = exactPrices
+		}
+		if target[q.PoolGroup] == nil {
+			target[q.PoolGroup] = make(map[int]float64)
+		}
+		target[q.PoolGroup][q.ChannelId] = price
+	}
+
+	result := make(map[string]map[int]float64, len(groups))
+	for g, byCh := range normalizedPrices {
+		result[g] = make(map[int]float64, len(byCh))
+		for cid, p := range byCh {
+			result[g][cid] = p
+		}
+	}
+	for g, byCh := range exactPrices {
+		if result[g] == nil {
+			result[g] = make(map[int]float64, len(byCh))
+		}
+		for cid, p := range byCh {
+			result[g][cid] = p
+		}
+	}
+	return result
+}
+
+// GetMinQuotePricesByGroupModel returns the lowest enabled blended quote price per group
+// across the specified active channel IDs for modelName (falling back to normalized model name).
+func GetMinQuotePricesByGroupModel(groups []string, modelName string, channelIdsByGroup map[string][]int) map[string]float64 {
+	byGroupChannel := GetChannelQuotePricesForGroupModel(groups, modelName, channelIdsByGroup)
+	if len(byGroupChannel) == 0 {
+		return nil
+	}
+	result := make(map[string]float64, len(byGroupChannel))
+	for g, byCh := range byGroupChannel {
+		for _, price := range byCh {
+			if cur, exists := result[g]; !exists || price < cur {
+				result[g] = price
+			}
+		}
+	}
+	return result
+}
+
+// GetEffectiveChannelQuoteForModel looks up the enabled ChannelQuote for (channelId, poolGroup, modelName),
+// falling back to the normalized model name when an exact model match does not exist.
+func GetEffectiveChannelQuoteForModel(channelId int, poolGroup string, modelName string) (*ChannelQuote, bool) {
+	if DB == nil || channelId <= 0 || strings.TrimSpace(poolGroup) == "" || strings.TrimSpace(modelName) == "" {
+		return nil, false
+	}
+	candidateModels := []string{modelName}
+	if normalized := ratio_setting.RoutingMatchModelName(modelName); normalized != "" && normalized != modelName {
+		candidateModels = append(candidateModels, normalized)
+	}
+	var quotes []ChannelQuote
+	if err := DB.Where("channel_id = ? AND pool_group = ? AND model_name IN ? AND status = ?",
+		channelId, poolGroup, candidateModels, QuoteStatusEnabled).Find(&quotes).Error; err != nil || len(quotes) == 0 {
+		return nil, false
+	}
+	for i := range quotes {
+		if quotes[i].ModelName == modelName {
+			q := quotes[i]
+			return &q, true
+		}
+	}
+	q := quotes[0]
+	return &q, true
+}
+
+// ListEnabledChannelQuotes returns enabled ChannelQuote records optionally filtered by poolGroup and modelName.
+func ListEnabledChannelQuotes(poolGroup string, modelName string) ([]ChannelQuote, error) {
+	if DB == nil {
+		return nil, nil
+	}
+	query := DB.Where("status = ?", QuoteStatusEnabled)
+	if strings.TrimSpace(poolGroup) != "" {
+		query = query.Where("pool_group = ?", strings.TrimSpace(poolGroup))
+	}
+	if strings.TrimSpace(modelName) != "" {
+		candidateModels := []string{strings.TrimSpace(modelName)}
+		if normalized := ratio_setting.RoutingMatchModelName(strings.TrimSpace(modelName)); normalized != "" && normalized != strings.TrimSpace(modelName) {
+			candidateModels = append(candidateModels, normalized)
+		}
+		query = query.Where("model_name IN ?", candidateModels)
+	}
+	var quotes []ChannelQuote
+	err := query.Order("input_price ASC, output_price ASC, channel_id ASC").Find(&quotes).Error
+	return quotes, err
 }

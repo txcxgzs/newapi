@@ -42,6 +42,8 @@ const defaults = {
   AutoGroups: '["default","vip"]',
   MaxTokenAutoGroups: 5,
   DefaultUseAutoGroup: false,
+  AutoRoutingStrategy: 'order' as const,
+  AutoIncludeMerchantGroups: false,
   GroupSpecialUsableGroup: '{}',
 }
 
@@ -53,6 +55,15 @@ const schema = z.object({
   AutoGroups: z.string(),
   MaxTokenAutoGroups: positiveIntegerSchema('Enter a positive integer'),
   DefaultUseAutoGroup: z.boolean(),
+  AutoRoutingStrategy: z.enum([
+    'order',
+    'round_robin',
+    'lowest_price',
+    'merchant_first',
+    'price_ttft',
+    'lowest_ttft',
+  ]),
+  AutoIncludeMerchantGroups: z.boolean(),
   GroupSpecialUsableGroup: z.string(),
 })
 
@@ -341,5 +352,39 @@ describe('group settings workspace', () => {
     expect(
       screen.getAllByRole('textbox', { name: 'Group description' })[1]
     ).toHaveValue('Updated description')
+  })
+
+  it('allows configuring auto routing strategy and auto-including merchant groups', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(<Fixture onSave={onSave} />)
+    await user.click(screen.getByRole('tab', { name: 'Auto group order' }))
+
+    const strategyTrigger = screen.getByRole('combobox', {
+      name: 'Auto routing strategy',
+    })
+    await user.click(strategyTrigger)
+    await user.click(
+      screen.getByRole('option', { name: 'Lowest quote price first' })
+    )
+
+    const includeSwitch = screen.getByRole('switch', {
+      name: 'Auto-include merchant groups',
+    })
+    await user.click(includeSwitch)
+    expect(includeSwitch).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect(onSave.mock.calls[0][0].AutoRoutingStrategy).toBe('lowest_price')
+    expect(onSave.mock.calls[0][0].AutoIncludeMerchantGroups).toBe(true)
+
+    await user.click(strategyTrigger)
+    await user.click(
+      screen.getByRole('option', { name: 'Best value (price × TTFT)' })
+    )
+    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect(onSave.mock.calls[1][0].AutoRoutingStrategy).toBe('price_ttft')
   })
 })

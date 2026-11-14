@@ -49,6 +49,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			marketRoute.GET("/overview", controller.GetMarketOverview)
 			marketRoute.GET("/kline", controller.GetMarketKline)
+			marketRoute.GET("/orderbook", controller.GetMarketOrderBook)
 		}
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
@@ -301,6 +302,8 @@ func SetApiRouter(router *gin.Engine) {
 			merchantPortalRoute.GET("/pools", controller.GetMerchantPortalPools)
 			merchantPortalRoute.GET("/earnings", controller.GetMerchantPortalEarnings)
 			merchantPortalRoute.GET("/quotes", controller.GetMerchantPortalQuotes)
+			merchantPortalRoute.PUT("/quotes", controller.UpdateMerchantPortalQuotes)
+			merchantPortalRoute.GET("/bidding", controller.GetMerchantPortalBidding)
 			merchantPortalRoute.PUT("/rate", controller.UpdateMerchantPortalRate)
 			// 外呼接口：报价同步与渠道探测都以服务器身份访问上游，叠加用户级限频。
 			merchantPortalRoute.POST("/sync", middleware.UserCriticalRateLimit("merchant-sync"), controller.SyncMerchantPortalQuotes)

@@ -1,15 +1,20 @@
 package service
 
 import (
+	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
+
+var autoRoundRobinCounter atomic.Uint64
 
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
@@ -57,15 +62,23 @@ func IsUserSelectableGroup(userGroup, groupName string) bool {
 func GetUserAutoGroup(userGroup string) []string {
 	autoGroups := make([]string, 0)
 	seen := make(map[string]struct{})
-	for _, group := range setting.GetAutoGroups() {
+	appendIfSelectable := func(group string) {
 		if !IsUserSelectableGroup(userGroup, group) {
-			continue
+			return
 		}
 		if _, ok := seen[group]; ok {
-			continue
+			return
 		}
 		seen[group] = struct{}{}
 		autoGroups = append(autoGroups, group)
+	}
+	for _, group := range setting.GetAutoGroups() {
+		appendIfSelectable(group)
+	}
+	if setting.GetAutoIncludeMerchantGroups() {
+		for _, group := range model.GetEnabledMerchantGroups() {
+			appendIfSelectable(group)
+		}
 	}
 	return autoGroups
 }
@@ -131,4 +144,121 @@ func GetUserGroupRatio(userGroup, group string) float64 {
 		return ratio
 	}
 	return ratio_setting.GetGroupRatio(group)
+}
+
+// ResolveAutoGroupsForRequest resolves the ordered Auto group sequence for the
+// current request according to the configured AutoRoutingStrategy, and memoizes
+// the result on c so cross-group retries within the same request walk a stable order.
+func ResolveAutoGroupsForRequest(c *gin.Context, userGroup string, modelName string, filters []dto.ChannelFilter) []string {
+	if c != nil {
+		if cached, ok := common.GetContextKey(c, constant.ContextKeyAutoGroupResolved); ok {
+			if resolved, ok := cached.([]string); ok {
+				return resolved
+			}
+		}
+	}
+
+	groups := GetRequestAutoGroups(c, userGroup)
+	if len(groups) > 1 {
+		policy := ResolveEffectiveRoutingPolicy(c)
+		groups = orderAutoGroupsByStrategy(groups, userGroup, modelName, policy.Strategy, filters)
+	}
+
+	if c != nil {
+		common.SetContextKey(c, constant.ContextKeyAutoGroupResolved, groups)
+	}
+	return groups
+}
+
+func orderAutoGroupsByStrategy(groups []string, userGroup string, modelName string, strategy string, filters []dto.ChannelFilter) []string {
+	switch setting.NormalizeAutoRoutingStrategy(strategy) {
+	case setting.AutoRoutingStrategyRoundRobin:
+		available := make([]string, 0, len(groups))
+		unavailable := make([]string, 0)
+		for _, g := range groups {
+			info := model.GetGroupModelRoutingInfo(g, modelName, filters)
+			if info.HasEnabledChannel {
+				available = append(available, g)
+			} else {
+				unavailable = append(unavailable, g)
+			}
+		}
+		if len(available) == 0 {
+			return groups
+		}
+		if len(available) > 1 {
+			offset := int((autoRoundRobinCounter.Add(1) - 1) % uint64(len(available)))
+			if offset > 0 {
+				rotated := make([]string, 0, len(available))
+				rotated = append(rotated, available[offset:]...)
+				rotated = append(rotated, available[:offset]...)
+				available = rotated
+			}
+		}
+		ordered := make([]string, 0, len(groups))
+		ordered = append(ordered, available...)
+		ordered = append(ordered, unavailable...)
+		return ordered
+
+	case setting.AutoRoutingStrategyMerchantFirst:
+		type merchantCandidate struct {
+			group string
+			tier  int
+		}
+		candidates := make([]merchantCandidate, 0, len(groups))
+		for _, g := range groups {
+			info := model.GetGroupModelRoutingInfo(g, modelName, filters)
+			tier := 3
+			switch {
+			case info.HasEnabledChannel && info.HasMerchant:
+				tier = 0
+			case info.HasEnabledChannel && !info.HasMerchant:
+				tier = 1
+			case !info.HasEnabledChannel && info.HasMerchant:
+				tier = 2
+			}
+			candidates = append(candidates, merchantCandidate{group: g, tier: tier})
+		}
+		sort.SliceStable(candidates, func(i, j int) bool {
+			return candidates[i].tier < candidates[j].tier
+		})
+		ordered := make([]string, len(candidates))
+		for i, c := range candidates {
+			ordered[i] = c.group
+		}
+		return ordered
+
+	case setting.AutoRoutingStrategyLowestPrice,
+		setting.AutoRoutingStrategyPriceTTFT,
+		setting.AutoRoutingStrategyLowestTTFT:
+		return RankAutoGroupsByOrderBook(groups, userGroup, modelName, strategy, filters)
+
+	default:
+		return groups
+	}
+}
+
+func computeAutoGroupEffectivePrice(userGroup, group, modelName string, minQuotePrice float64) float64 {
+	userGroupRatio := GetUserGroupRatio(userGroup, group)
+	if userGroupRatio <= 0 {
+		userGroupRatio = 1
+	}
+	if minQuotePrice > 0 {
+		baseGroupRatio := ratio_setting.GetGroupRatio(group)
+		if baseGroupRatio > 0 {
+			return minQuotePrice * (userGroupRatio / baseGroupRatio)
+		}
+		return minQuotePrice
+	}
+	if modelRatio, ok, _ := ratio_setting.GetModelRatio(modelName); ok && modelRatio > 0 {
+		completion := ratio_setting.GetCompletionRatio(modelName)
+		if completion <= 0 {
+			completion = 1
+		}
+		return userGroupRatio * modelRatio * model.QuoteRatioBase * (1 + completion) / 2
+	}
+	if modelPrice, ok := ratio_setting.GetModelPrice(modelName, false); ok && modelPrice > 0 {
+		return userGroupRatio * modelPrice
+	}
+	return userGroupRatio
 }

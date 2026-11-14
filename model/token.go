@@ -29,6 +29,7 @@ type Token struct {
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
 	AutoGroups         string         `json:"-" gorm:"type:text"`
+	RoutingPolicy      string         `json:"-" gorm:"type:text"` // JSON of TokenRoutingPolicy
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 	// 允许用此令牌查询所属用户的额度；新建令牌默认开启，已有令牌升级后保持关闭
 	AllowUserQuotaQuery bool   `json:"allow_user_quota_query"`
@@ -57,6 +58,55 @@ func (token *Token) SetAutoGroups(groups []string) error {
 		return err
 	}
 	token.AutoGroups = string(data)
+	return nil
+}
+
+// TokenRoutingPolicy stores per-token Order-Book routing strategy and buyer risk filters.
+type TokenRoutingPolicy struct {
+	Strategy          string   `json:"strategy,omitempty"`
+	MaxTtftMs         int      `json:"max_ttft_ms,omitempty"`
+	MinTps            float64  `json:"min_tps,omitempty"`
+	MaxPrice          float64  `json:"max_price,omitempty"`
+	MerchantWhitelist []string `json:"merchant_whitelist,omitempty"`
+	MerchantBlacklist []string `json:"merchant_blacklist,omitempty"`
+}
+
+func (p *TokenRoutingPolicy) IsEmpty() bool {
+	if p == nil {
+		return true
+	}
+	return strings.TrimSpace(p.Strategy) == "" &&
+		p.MaxTtftMs <= 0 &&
+		p.MinTps <= 0 &&
+		p.MaxPrice <= 0 &&
+		len(p.MerchantWhitelist) == 0 &&
+		len(p.MerchantBlacklist) == 0
+}
+
+func (token *Token) GetRoutingPolicy() (*TokenRoutingPolicy, error) {
+	if token == nil || strings.TrimSpace(token.RoutingPolicy) == "" {
+		return nil, nil
+	}
+	var policy TokenRoutingPolicy
+	if err := common.UnmarshalJsonStr(token.RoutingPolicy, &policy); err != nil {
+		return nil, err
+	}
+	if policy.IsEmpty() {
+		return nil, nil
+	}
+	return &policy, nil
+}
+
+func (token *Token) SetRoutingPolicy(policy *TokenRoutingPolicy) error {
+	if policy == nil || policy.IsEmpty() {
+		token.RoutingPolicy = ""
+		return nil
+	}
+	data, err := common.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	token.RoutingPolicy = string(data)
 	return nil
 }
 
@@ -318,7 +368,7 @@ func (token *Token) Update() (err error) {
 	}
 	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
-		"allow_user_quota_query").Updates(token).Error
+		"routing_policy", "allow_user_quota_query").Updates(token).Error
 }
 
 func (token *Token) SelectUpdate() (err error) {

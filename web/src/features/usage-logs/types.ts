@@ -336,6 +336,14 @@ export interface LogOtherData {
   request_plugins?: RequestPluginRecordItem[]
   billing_source?: string
   group?: string
+  merchant_id?: number
+  merchant_name?: string
+  merchant_code?: string
+  routing_strategy?: string
+  quote_source?: string
+  quote_input_price?: number
+  quote_output_price?: number
+  stream_tps?: number
   stream_status?: {
     status?: string
     end_reason?: string

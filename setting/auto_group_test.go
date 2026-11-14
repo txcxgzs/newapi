@@ -27,3 +27,36 @@ func TestUpdateMaxTokenAutoGroupsRejectsInvalidValuesWithoutChangingState(t *tes
 		})
 	}
 }
+
+func TestAutoRoutingStrategyAndIncludeMerchantGroups(t *testing.T) {
+	originalStrategy := GetAutoRoutingStrategy()
+	originalInclude := GetAutoIncludeMerchantGroups()
+	t.Cleanup(func() {
+		require.NoError(t, UpdateAutoRoutingStrategy(originalStrategy))
+		SetAutoIncludeMerchantGroups(originalInclude)
+	})
+
+	for _, valid := range []string{
+		AutoRoutingStrategyOrder,
+		AutoRoutingStrategyRoundRobin,
+		AutoRoutingStrategyLowestPrice,
+		AutoRoutingStrategyMerchantFirst,
+	} {
+		require.NoError(t, UpdateAutoRoutingStrategy(valid))
+		assert.Equal(t, valid, GetAutoRoutingStrategy())
+	}
+
+	require.NoError(t, UpdateAutoRoutingStrategy("  lowest_price  "))
+	assert.Equal(t, AutoRoutingStrategyLowestPrice, GetAutoRoutingStrategy())
+
+	for _, invalid := range []string{"", "random", "cost_first"} {
+		assert.Error(t, ValidateAutoRoutingStrategy(invalid))
+		assert.Error(t, UpdateAutoRoutingStrategy(invalid))
+		assert.Equal(t, AutoRoutingStrategyLowestPrice, GetAutoRoutingStrategy())
+	}
+
+	SetAutoIncludeMerchantGroups(true)
+	assert.True(t, GetAutoIncludeMerchantGroups())
+	SetAutoIncludeMerchantGroups(false)
+	assert.False(t, GetAutoIncludeMerchantGroups())
+}

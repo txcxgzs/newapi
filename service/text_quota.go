@@ -477,6 +477,14 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, common.NewMessage("Model {{model}}", map[string]any{"model": summary.ModelName}))
 	}
 
+	if summary.CompletionTokens > 0 && !relayInfo.FirstResponseTime.IsZero() {
+		genSec := time.Since(relayInfo.FirstResponseTime).Seconds()
+		if genSec < 0.05 {
+			genSec = 0.05
+		}
+		common.SetContextKey(ctx, constant.ContextKeySelectedStreamTps, float64(summary.CompletionTokens)/genSec)
+	}
+
 	var other *model.LogOther
 	if summary.IsClaudeUsageSemantic {
 		other = GenerateClaudeOtherInfo(ctx, relayInfo,

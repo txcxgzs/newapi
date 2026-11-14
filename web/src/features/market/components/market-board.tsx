@@ -21,14 +21,30 @@ import {
   Activity,
   ArrowLeft,
   BarChart3,
+  BookOpen,
   CandlestickChart,
+  Check,
+  ChevronDown,
+  Copy,
   Layers,
   RefreshCw,
+  Search,
+  ShieldCheck,
+  Store,
+  X,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
@@ -36,7 +52,7 @@ import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { useMarketKline, useMarketOverview } from '../hooks/use-market-data'
+import { useMarketKline, useMarketOrderBook, useMarketOverview } from '../hooks/use-market-data'
 import {
   formatMarketPrice,
   formatMarketRatio,
@@ -60,6 +76,14 @@ export function MarketBoard() {
     model: string
   } | null>(null)
   const [interval, setIntervalPeriod] = useState<CandleInterval>('1m')
+  const [orderBookScope, setOrderBookScope] = useState<'selected' | 'all'>(
+    'selected'
+  )
+  const [orderBookStrategy, setOrderBookStrategy] =
+    useState<string>('price_ttft')
+  const [orderBookSearch, setOrderBookSearch] = useState<string>('')
+  const [guideOpen, setGuideOpen] = useState<boolean>(false)
+  const [copiedCurl, setCopiedCurl] = useState<boolean>(false)
 
   const {
     data: overview,
@@ -81,6 +105,95 @@ export function MarketBoard() {
     interval,
     200
   )
+
+  const {
+    data: orderBookData,
+    isFetching: orderBookFetching,
+    refetch: refetchOrderBook,
+  } = useMarketOrderBook({
+    pool:
+      orderBookScope === 'selected'
+        ? (selected?.pool ?? (pool || undefined))
+        : pool || undefined,
+    model: orderBookScope === 'selected' ? selected?.model : undefined,
+    strategy: orderBookStrategy,
+  })
+  const orderBookEntries = useMemo(() => {
+    const entries = orderBookData?.entries ?? []
+    const kw = orderBookSearch.trim().toLowerCase()
+    if (!kw) return entries
+    return entries.filter(
+      (entry) =>
+        entry.model.toLowerCase().includes(kw) ||
+        entry.merchant_name.toLowerCase().includes(kw) ||
+        entry.merchant_code.toLowerCase().includes(kw) ||
+        entry.pool.toLowerCase().includes(kw)
+    )
+  }, [orderBookData, orderBookSearch])
+
+  const sampleModel = selected?.model || 'gpt-4o'
+  const originUrl =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'https://your-gateway.example.com'
+  const buyerCurlSnippet = `curl -sS -D - ${originUrl}/v1/chat/completions \\
+  -H "Authorization: Bearer sk-your-token" \\
+  -H "Content-Type: application/json" \\
+  -H "X-Routing-Strategy: ${orderBookStrategy}" \\
+  -H "X-Max-TTFT-Ms: 800" \\
+  -H "X-Min-TPS: 25" \\
+  -H "X-Max-Price: 5.0" \\
+  -d '{"model":"${sampleModel}","messages":[{"role":"user","content":"hi"}]}'`
+
+  async function handleCopyCurl() {
+    try {
+      await navigator.clipboard.writeText(buyerCurlSnippet)
+      setCopiedCurl(true)
+      toast.success(t('Copied example request'))
+      setTimeout(() => setCopiedCurl(false), 1800)
+    } catch {
+      toast.error(t('Failed to copy to clipboard'))
+    }
+  }
+
+  const orderBookEmptyText = (() => {
+    if (orderBookFetching) return t('Loading order book...')
+    if (orderBookSearch) {
+      return t('No order-book quotes match "{{query}}"', {
+        query: orderBookSearch,
+      })
+    }
+    return t('No active order-book bids available')
+  })()
+
+  function renderQuoteSourceBadge(src: string) {
+    switch (src) {
+      case 'merchant':
+        return (
+          <Badge variant='default' className='h-5 px-1.5 text-[10px]'>
+            {t('Merchant Bid')}
+          </Badge>
+        )
+      case 'auto':
+        return (
+          <Badge variant='secondary' className='h-5 px-1.5 text-[10px]'>
+            {t('Auto Sync')}
+          </Badge>
+        )
+      case 'manual':
+        return (
+          <Badge variant='outline' className='h-5 px-1.5 text-[10px]'>
+            {t('Manual Lock')}
+          </Badge>
+        )
+      default:
+        return (
+          <Badge variant='secondary' className='h-5 px-1.5 text-[10px]'>
+            {src || t('Derived')}
+          </Badge>
+        )
+    }
+  }
 
   const current = stocks.find(
     (s) => s.pool === selected?.pool && s.model === selected?.model
@@ -372,6 +485,364 @@ export function MarketBoard() {
       </div>
 
       {renderBody()}
+
+      <div className='bg-card mt-4 rounded-xl border p-4'>
+        <div className='mb-3 flex flex-wrap items-center justify-between gap-3'>
+          <div>
+            <div className='flex items-center gap-2'>
+              <h2 className='text-sm font-semibold tracking-tight'>
+                {t('Live Order Book')}
+              </h2>
+              <Badge variant='secondary' className='h-5 px-1.5 font-mono text-[10px]'>
+                {orderBookEntries.length}
+              </Badge>
+            </div>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Real-time merchant quotes ranked by price, TTFT first-token latency, and health EMA'
+              )}
+            </p>
+          </div>
+          <div className='flex flex-wrap items-center gap-2'>
+            <div className='relative w-44 sm:w-52'>
+              <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2' />
+              <Input
+                value={orderBookSearch}
+                onChange={(e) => setOrderBookSearch(e.target.value)}
+                placeholder={t('Filter model or provider...')}
+                className='h-8 pr-7 pl-8 text-xs'
+              />
+              {orderBookSearch && (
+                <button
+                  type='button'
+                  aria-label={t('Clear search')}
+                  onClick={() => setOrderBookSearch('')}
+                  className='text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2'
+                >
+                  <X className='size-3.5' />
+                </button>
+              )}
+            </div>
+            <ToggleGroup
+              value={[orderBookStrategy]}
+              onValueChange={(values) => {
+                if (values[0]) setOrderBookStrategy(values[0])
+              }}
+              variant='outline'
+              size='sm'
+            >
+              <ToggleGroupItem value='price_ttft'>
+                {t('Price × TTFT')}
+              </ToggleGroupItem>
+              <ToggleGroupItem value='lowest_price'>
+                {t('Lowest Price')}
+              </ToggleGroupItem>
+              <ToggleGroupItem value='lowest_ttft'>
+                {t('Lowest TTFT')}
+              </ToggleGroupItem>
+            </ToggleGroup>
+            <ToggleGroup
+              value={[orderBookScope]}
+              onValueChange={(values) => {
+                if (values[0] === 'selected' || values[0] === 'all') {
+                  setOrderBookScope(values[0])
+                }
+              }}
+              variant='outline'
+              size='sm'
+            >
+              <ToggleGroupItem value='selected'>
+                {t('Selected Model')}
+              </ToggleGroupItem>
+              <ToggleGroupItem value='all'>{t('All Models')}</ToggleGroupItem>
+            </ToggleGroup>
+            <Button
+              variant='outline'
+              size='sm'
+              className='h-8 px-2.5 text-xs'
+              onClick={() => void refetchOrderBook()}
+              disabled={orderBookFetching}
+              aria-label={t('Refresh order book')}
+            >
+              <RefreshCw
+                className={cn(
+                  'size-3.5',
+                  orderBookFetching && 'animate-spin'
+                )}
+              />
+            </Button>
+          </div>
+        </div>
+
+        <div className='overflow-x-auto'>
+          <table className='w-full text-left text-xs'>
+            <thead>
+              <tr className='border-border/60 text-muted-foreground border-b'>
+                <th className='px-2 py-2 font-medium'>#</th>
+                <th className='px-2 py-2 font-medium'>{t('Provider')}</th>
+                <th className='px-2 py-2 font-medium'>{t('Pool')}</th>
+                <th className='px-2 py-2 font-medium'>{t('Model')}</th>
+                <th className='px-2 py-2 text-right font-medium'>
+                  {t('Ask In / Out ($/1M)')}
+                </th>
+                <th className='px-2 py-2 text-right font-medium'>
+                  {t('TTFT')}
+                </th>
+                <th className='px-2 py-2 text-right font-medium'>
+                  {t('TPS')}
+                </th>
+                <th className='px-2 py-2 text-right font-medium'>
+                  {t('Success')}
+                </th>
+                <th className='px-2 py-2 text-right font-medium'>
+                  {t('Source')}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {orderBookEntries.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={9}
+                    className='text-muted-foreground py-6 text-center'
+                  >
+                    {orderBookEmptyText}
+                  </td>
+                </tr>
+              ) : (
+                orderBookEntries.map((entry) => {
+                  const isTop = entry.rank === 1
+                  const lowHealth =
+                    entry.sample_count > 0 && entry.success_rate < 0.9
+                  return (
+                    <tr
+                      key={`${entry.pool}-${entry.model}-${entry.rank}-${entry.merchant_code}`}
+                      className={cn(
+                        'border-border/40 hover:bg-muted/30 border-b last:border-0',
+                        isTop && 'bg-emerald-500/[0.03]'
+                      )}
+                    >
+                      <td className='px-2 py-2 font-mono font-semibold'>
+                        <div className='flex items-center gap-1.5'>
+                          <span>#{entry.rank}</span>
+                          {isTop && (
+                            <Badge
+                              variant='outline'
+                              className='h-4 border-emerald-500/40 bg-emerald-500/10 px-1 text-[10px] text-emerald-600 dark:text-emerald-400'
+                            >
+                              {t('Best')}
+                            </Badge>
+                          )}
+                        </div>
+                      </td>
+                      <td className='px-2 py-2'>
+                        <span className='font-medium'>
+                          {entry.merchant_name}
+                        </span>
+                        {entry.merchant_code && (
+                          <span className='text-muted-foreground ml-1 font-mono'>
+                            ({entry.merchant_code})
+                          </span>
+                        )}
+                      </td>
+                      <td className='px-2 py-2 font-mono'>{entry.pool}</td>
+                      <td className='px-2 py-2 font-mono font-medium'>
+                        {entry.model}
+                      </td>
+                      <td className='px-2 py-2 text-right font-mono tabular-nums'>
+                        {formatMarketPrice(entry.input_price, locale)} /{' '}
+                        {formatMarketPrice(entry.output_price, locale)}
+                      </td>
+                      <td
+                        className={cn(
+                          'px-2 py-2 text-right font-mono tabular-nums',
+                          !entry.has_live_metric &&
+                            'text-muted-foreground italic'
+                        )}
+                        title={
+                          entry.has_live_metric
+                            ? t('Measured EMA first-token latency')
+                            : t('Cold-start baseline prior')
+                        }
+                      >
+                        {entry.has_live_metric
+                          ? `${Math.round(entry.ttft_ms)} ms`
+                          : `~${Math.round(entry.ttft_ms)} ms`}
+                      </td>
+                      <td className='px-2 py-2 text-right font-mono tabular-nums'>
+                        {entry.tps > 0 ? `${entry.tps.toFixed(1)}/s` : '--'}
+                      </td>
+                      <td
+                        className={cn(
+                          'px-2 py-2 text-right font-mono tabular-nums',
+                          lowHealth && 'font-medium text-amber-600 dark:text-amber-400'
+                        )}
+                      >
+                        {entry.sample_count > 0
+                          ? `${(entry.success_rate * 100).toFixed(1)}% (${entry.sample_count})`
+                          : '--'}
+                      </td>
+                      <td className='px-2 py-2 text-right'>
+                        {renderQuoteSourceBadge(entry.quote_source)}
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Collapsible
+        open={guideOpen}
+        onOpenChange={setGuideOpen}
+        className='bg-card mt-4 rounded-xl border p-4'
+      >
+        <CollapsibleTrigger
+          render={
+            <button
+              type='button'
+              className='flex w-full items-center justify-between gap-2 text-left'
+            />
+          }
+        >
+          <div className='flex items-center gap-2'>
+            <BookOpen className='text-primary size-4' />
+            <div>
+              <h2 className='text-sm font-semibold tracking-tight'>
+                {t('Order-Book Routing & Bidding Guide')}
+              </h2>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Per-request auction routing headers, X-Relay-* audit verification, and provider live bidding rules'
+                )}
+              </p>
+            </div>
+          </div>
+          <ChevronDown
+            className={cn(
+              'text-muted-foreground size-4 shrink-0 transition-transform',
+              guideOpen && 'rotate-180'
+            )}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className='mt-4 grid gap-4 border-t pt-4 lg:grid-cols-2'>
+          <div className='bg-muted/25 space-y-3 rounded-lg border p-3.5 text-xs'>
+            <div className='flex items-center justify-between gap-2'>
+              <div className='flex items-center gap-1.5 font-semibold'>
+                <ShieldCheck className='text-primary size-4' />
+                <span>{t('Buyer SLA & Header Override Quickstart')}</span>
+              </div>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                className='h-7 gap-1 px-2 text-[11px]'
+                onClick={() => void handleCopyCurl()}
+              >
+                {copiedCurl ? (
+                  <Check className='size-3 text-emerald-500' />
+                ) : (
+                  <Copy className='size-3' />
+                )}
+                {copiedCurl ? t('Copied') : t('Copy cURL')}
+              </Button>
+            </div>
+            <pre className='bg-background overflow-x-auto rounded-md border p-2.5 font-mono text-[11px] leading-relaxed'>
+              {buyerCurlSnippet}
+            </pre>
+            <div className='space-y-1.5 leading-relaxed'>
+              <p className='font-medium'>
+                {t('Verifiable Response Headers & Usage Logs')}
+              </p>
+              <p className='text-muted-foreground'>
+                {t(
+                  'Every response includes X-Relay-Provider, X-Relay-Provider-Code, X-Relay-Group, X-Relay-Strategy, X-Relay-Quote-Source, X-Relay-Price-Input, and X-Relay-Price-Output, and records them permanently in your Usage Logs.'
+                )}
+              </p>
+              <div className='flex flex-wrap gap-2 pt-1'>
+                {authUser ? (
+                  <>
+                    <Button
+                      variant='outline'
+                      size='sm'
+                      className='h-7 text-xs'
+                      render={<Link to='/keys' />}
+                    >
+                      {t('Configure Token SLA')}
+                    </Button>
+                    <Button
+                      variant='outline'
+                      size='sm'
+                      className='h-7 text-xs'
+                      render={<Link to='/usage-logs' />}
+                    >
+                      {t('Inspect Fill Logs')}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    className='h-7 text-xs'
+                    render={<Link to='/sign-in' />}
+                  >
+                    {t('Sign in to configure keys')}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className='bg-muted/25 space-y-3 rounded-lg border p-3.5 text-xs'>
+            <div className='flex items-center gap-1.5 font-semibold'>
+              <Store className='text-primary size-4' />
+              <span>{t('Provider Real-Time Bidding & Settlement')}</span>
+            </div>
+            <ul className='text-muted-foreground list-disc space-y-1.5 pl-4 leading-relaxed'>
+              <li>
+                {t(
+                  'Quote priority: Merchant real-time bids (merchant) / auto-synced quotes (auto) / manual locks (manual) override static model ratios directly at settlement.'
+                )}
+              </li>
+              <li>
+                {t(
+                  'Live performance EMA: Each call measures actual TTFT and streaming TPS. Low success rates (<85%) automatically penalize rank score so fast, reliable providers win more volume.'
+                )}
+              </li>
+              <li>
+                {t(
+                  'Retry protection: If a primary node fails before first token, failover resets base pricing cleanly before settling on a backup node—no stale quotes leak across attempts.'
+                )}
+              </li>
+              <li>
+                {t(
+                  'Automation API: Providers can push live quotes via PUT /api/merchant/portal/quotes without manual review.'
+                )}
+              </li>
+            </ul>
+            <div className='flex flex-wrap gap-2 pt-1'>
+              <Button
+                variant='outline'
+                size='sm'
+                className='h-7 text-xs'
+                render={
+                  <Link
+                    to={
+                      userRole >= ROLE.MERCHANT ? '/merchant' : '/merchant/apply'
+                    }
+                  />
+                }
+              >
+                {userRole >= ROLE.MERCHANT
+                  ? t('Open Merchant Bidding Portal')
+                  : t('Apply as a Compute Provider')}
+              </Button>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   )
 }

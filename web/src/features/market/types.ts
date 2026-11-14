@@ -61,3 +61,28 @@ export interface MarketCandle {
 }
 
 export type CandleInterval = '1m' | '5m' | '1h'
+
+export interface MarketOrderBookEntry {
+  rank: number
+  pool: string
+  model: string
+  merchant_code: string
+  merchant_name: string
+  input_price: number
+  output_price: number
+  blended_price: number
+  quote_source: string
+  ttft_ms: number
+  tps: number
+  success_rate: number
+  sample_count: number
+  has_live_metric: boolean
+  score: number
+  updated_at: number
+}
+
+export interface MarketOrderBookResponse {
+  strategy: string
+  entries: MarketOrderBookEntry[]
+  updated_at: number
+}

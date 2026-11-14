@@ -101,6 +101,8 @@ type GroupRatioVisualEditorProps = {
   groupGroupRatio: string
   autoGroups: string
   maxTokenAutoGroupsField: ReactNode
+  autoRoutingStrategyField?: ReactNode
+  autoIncludeMerchantGroupsField?: ReactNode
   groupSpecialUsableGroup: string
   onChange: (field: string, value: string) => void
 }
@@ -276,6 +278,8 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   groupGroupRatio,
   autoGroups,
   maxTokenAutoGroupsField,
+  autoRoutingStrategyField,
+  autoIncludeMerchantGroupsField,
   groupSpecialUsableGroup,
   onChange,
 }: GroupRatioVisualEditorProps) {
@@ -447,6 +451,10 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
               )}
             </div>
             <div className='bg-muted/20 flex min-w-0 flex-col gap-4 self-start rounded-lg border p-4'>
+              {autoRoutingStrategyField}
+              {autoRoutingStrategyField && <Separator />}
+              {autoIncludeMerchantGroupsField}
+              {autoIncludeMerchantGroupsField && <Separator />}
               {defaultUseAutoGroupField}
               <Separator />
               {maxTokenAutoGroupsField}

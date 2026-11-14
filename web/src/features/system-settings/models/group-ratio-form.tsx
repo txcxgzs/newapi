@@ -45,6 +45,13 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -73,6 +80,14 @@ type GroupFormValues = {
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
+  AutoRoutingStrategy?:
+    | 'order'
+    | 'round_robin'
+    | 'lowest_price'
+    | 'merchant_first'
+    | 'price_ttft'
+    | 'lowest_ttft'
+  AutoIncludeMerchantGroups?: boolean
   GroupSpecialUsableGroup: string
 }
 
@@ -106,6 +121,80 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   const toggleEditMode = useCallback(() => {
     setEditMode((prev) => (prev === 'visual' ? 'json' : 'visual'))
   }, [])
+
+  const autoRoutingStrategyField = (
+    <FormField
+      control={form.control}
+      name='AutoRoutingStrategy'
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{t('Auto routing strategy')}</FormLabel>
+          <Select
+            value={field.value || 'order'}
+            onValueChange={field.onChange}
+          >
+            <FormControl>
+              <SelectTrigger aria-label={t('Auto routing strategy')}>
+                <SelectValue />
+              </SelectTrigger>
+            </FormControl>
+            <SelectContent>
+              <SelectItem value='order'>
+                {t('Order by configured priority list')}
+              </SelectItem>
+              <SelectItem value='round_robin'>
+                {t('Round-robin balance')}
+              </SelectItem>
+              <SelectItem value='lowest_price'>
+                {t('Lowest quote price first')}
+              </SelectItem>
+              <SelectItem value='price_ttft'>
+                {t('Best value (price × TTFT)')}
+              </SelectItem>
+              <SelectItem value='lowest_ttft'>
+                {t('Fastest first token (lowest TTFT)')}
+              </SelectItem>
+              <SelectItem value='merchant_first'>
+                {t('Merchant groups first')}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <FormDescription>
+            {t(
+              'Controls how Auto selects and orders candidate groups per request: fixed list order, round-robin rotation, lowest ChannelQuote/group ratio, or merchant-owned groups first.'
+            )}
+          </FormDescription>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  )
+
+  const autoIncludeMerchantGroupsField = (
+    <FormField
+      control={form.control}
+      name='AutoIncludeMerchantGroups'
+      render={({ field }) => (
+        <SettingsSwitchItem>
+          <SettingsSwitchContent>
+            <FormLabel>{t('Auto-include merchant groups')}</FormLabel>
+            <FormDescription>
+              {t(
+                'Automatically include enabled merchant groups available to the user when using global Auto routing.'
+              )}
+            </FormDescription>
+          </SettingsSwitchContent>
+          <FormControl>
+            <Switch
+              aria-label={t('Auto-include merchant groups')}
+              checked={Boolean(field.value)}
+              onCheckedChange={field.onChange}
+            />
+          </FormControl>
+        </SettingsSwitchItem>
+      )}
+    />
+  )
 
   return (
     <div className='space-y-6'>
@@ -224,6 +313,8 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                 )}
               />
             }
+            autoRoutingStrategyField={autoRoutingStrategyField}
+            autoIncludeMerchantGroupsField={autoIncludeMerchantGroupsField}
             groupSpecialUsableGroup={values.GroupSpecialUsableGroup ?? ''}
             onChange={(field, value) =>
               handleFieldChange(field as keyof GroupFormValues, value)
@@ -411,6 +502,9 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                 </FormItem>
               )}
             />
+
+            {autoRoutingStrategyField}
+            {autoIncludeMerchantGroupsField}
 
             <FormField
               control={form.control}

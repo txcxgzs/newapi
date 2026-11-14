@@ -20,7 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import { getMarketKline, getMarketOverview } from '../api'
+import { getMarketKline, getMarketOrderBook, getMarketOverview } from '../api'
 import type { CandleInterval } from '../types'
 
 // ----------------------------------------------------------------------------
@@ -51,5 +51,23 @@ export function useMarketKline(
     enabled: Boolean(pool && model),
     refetchInterval: refetchMs,
     staleTime: 10000,
+  })
+}
+
+export function useMarketOrderBook(
+  params?: { pool?: string; model?: string; strategy?: string },
+  refetchMs = 10000
+) {
+  return useQuery({
+    queryKey: [
+      'market',
+      'orderbook',
+      params?.pool ?? '',
+      params?.model ?? '',
+      params?.strategy ?? '',
+    ],
+    queryFn: async () => requireServerSuccess(await getMarketOrderBook(params)),
+    refetchInterval: refetchMs,
+    staleTime: 5000,
   })
 }

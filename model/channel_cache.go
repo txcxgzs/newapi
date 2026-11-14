@@ -313,3 +313,173 @@ func CacheUpdateChannel(channel *Channel) {
 	channelSyncLock.Unlock()
 	InvalidatePricingCache()
 }
+
+// GroupModelRoutingInfo summarizes active channels and merchant ownership for a
+// (group, model) pair so Auto routing strategies can rank candidate groups.
+type GroupModelRoutingInfo struct {
+	ChannelIds        []int
+	HasEnabledChannel bool
+	HasMerchant       bool
+}
+
+// GetSatisfiedChannelsForGroupModel returns all enabled channels matching filters
+// for a given (group, model) pair so Order-Book routing can score and rank nodes directly.
+func GetSatisfiedChannelsForGroupModel(group string, modelName string, filters []dto.ChannelFilter) []*Channel {
+	if group == "" || modelName == "" {
+		return nil
+	}
+	if common.MemoryCacheEnabled {
+		channelSyncLock.RLock()
+		defer channelSyncLock.RUnlock()
+
+		candidateIDs, _ := filterCandidateIDs(group2model2channels[group][modelName], modelName, filters)
+		if len(candidateIDs) == 0 {
+			if normalized := ratio_setting.RoutingMatchModelName(modelName); normalized != "" && normalized != modelName {
+				candidateIDs, _ = filterCandidateIDs(group2model2channels[group][normalized], modelName, filters)
+			}
+		}
+		if len(candidateIDs) == 0 {
+			return nil
+		}
+		channels := make([]*Channel, 0, len(candidateIDs))
+		for _, id := range candidateIDs {
+			if ch, ok := channelsIDM[id]; ok && ch != nil && ch.Status == common.ChannelStatusEnabled {
+				channels = append(channels, ch)
+			}
+		}
+		return channels
+	}
+
+	info := GetGroupModelRoutingInfo(group, modelName, filters)
+	if len(info.ChannelIds) == 0 || DB == nil {
+		return nil
+	}
+	var dbChannels []*Channel
+	if err := DB.Where("id IN ? AND status = ?", info.ChannelIds, common.ChannelStatusEnabled).Find(&dbChannels).Error; err != nil {
+		return nil
+	}
+	return dbChannels
+}
+
+// GetGroupModelRoutingInfo returns enabled channel IDs (matching filters) and
+// whether the group contains any enabled merchant channel for the given model.
+func GetGroupModelRoutingInfo(group string, modelName string, filters []dto.ChannelFilter) GroupModelRoutingInfo {
+	var info GroupModelRoutingInfo
+	if group == "" || modelName == "" {
+		return info
+	}
+
+	if common.MemoryCacheEnabled {
+		channelSyncLock.RLock()
+		defer channelSyncLock.RUnlock()
+
+		candidateIDs, _ := filterCandidateIDs(group2model2channels[group][modelName], modelName, filters)
+		if len(candidateIDs) == 0 {
+			if normalized := ratio_setting.RoutingMatchModelName(modelName); normalized != "" && normalized != modelName {
+				candidateIDs, _ = filterCandidateIDs(group2model2channels[group][normalized], modelName, filters)
+			}
+		}
+		if len(candidateIDs) == 0 {
+			return info
+		}
+
+		info.ChannelIds = make([]int, 0, len(candidateIDs))
+		for _, channelId := range candidateIDs {
+			ch, ok := channelsIDM[channelId]
+			if !ok || ch.Status != common.ChannelStatusEnabled {
+				continue
+			}
+			info.ChannelIds = append(info.ChannelIds, channelId)
+			info.HasEnabledChannel = true
+			if ch.GetMerchantId() > 0 {
+				info.HasMerchant = true
+			}
+		}
+		return info
+	}
+
+	if DB == nil {
+		return info
+	}
+
+	var abilities []Ability
+	_ = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, modelName, true).Find(&abilities).Error
+	abilities = filterAbilitiesByConstraints(abilities, modelName, filters)
+	if len(abilities) == 0 {
+		if normalized := ratio_setting.RoutingMatchModelName(modelName); normalized != "" && normalized != modelName {
+			_ = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, normalized, true).Find(&abilities).Error
+			abilities = filterAbilitiesByConstraints(abilities, modelName, filters)
+		}
+	}
+	if len(abilities) == 0 {
+		return info
+	}
+
+	seenIDs := make(map[int]struct{}, len(abilities))
+	queryIDs := make([]int, 0, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := seenIDs[ability.ChannelId]; ok {
+			continue
+		}
+		seenIDs[ability.ChannelId] = struct{}{}
+		queryIDs = append(queryIDs, ability.ChannelId)
+	}
+
+	var channels []Channel
+	if err := DB.Select("id, status, merchant_id").Where("id IN ?", queryIDs).Find(&channels).Error; err != nil {
+		return info
+	}
+	for _, ch := range channels {
+		if ch.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		info.ChannelIds = append(info.ChannelIds, ch.Id)
+		info.HasEnabledChannel = true
+		if ch.GetMerchantId() > 0 {
+			info.HasMerchant = true
+		}
+	}
+	return info
+}
+
+// GetEnabledMerchantGroups returns sorted unique group names that currently have
+// at least one enabled merchant-owned channel.
+func GetEnabledMerchantGroups() []string {
+	groupSet := make(map[string]struct{})
+	addRawGroups := func(raw string) {
+		for _, part := range strings.Split(raw, ",") {
+			if g := strings.TrimSpace(part); g != "" && g != "auto" {
+				groupSet[g] = struct{}{}
+			}
+		}
+	}
+
+	if common.MemoryCacheEnabled {
+		channelSyncLock.RLock()
+		for _, ch := range channelsIDM {
+			if ch != nil && ch.Status == common.ChannelStatusEnabled && ch.GetMerchantId() > 0 {
+				addRawGroups(ch.Group)
+			}
+		}
+		channelSyncLock.RUnlock()
+	} else if DB != nil {
+		var rows []struct {
+			Group string
+		}
+		if err := DB.Model(&Channel{}).Select(commonGroupCol).Where("status = ? AND merchant_id > 0", common.ChannelStatusEnabled).Find(&rows).Error; err == nil {
+			for _, row := range rows {
+				addRawGroups(row.Group)
+			}
+		}
+	}
+
+	if len(groupSet) == 0 {
+		return nil
+	}
+	groups := make([]string, 0, len(groupSet))
+	for g := range groupSet {
+		groups = append(groups, g)
+	}
+	sort.Strings(groups)
+	return groups
+}

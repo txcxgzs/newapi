@@ -18,16 +18,31 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
 import {
+  Activity,
   AlertTriangle,
   ArrowLeft,
+  BarChart3,
+  Check,
+  CheckCircle2,
   ChevronRight,
   Clock,
+  Copy,
   ExternalLink,
+  FileSpreadsheet,
+  Globe,
+  Layers,
   PencilLine,
+  Plus,
   QrCode,
+  ReceiptText,
   RefreshCw,
+  Search,
   ShieldAlert,
+  ShieldCheck,
   Store,
+  TrendingUp,
+  UserCheck,
+  Wallet,
 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
@@ -41,11 +56,12 @@ import {
   YAxis,
 } from 'recharts'
 
+import { SectionPageLayout } from '@/components/layout'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -81,6 +97,7 @@ import { DEFAULT_CURRENCY_CONFIG, useSystemConfigStore } from '@/stores/system-c
 import {
   applyMerchantShopNameChange,
   createMerchantWithdrawal,
+  getMerchantBidding,
   getMerchantEarnings,
   getMerchantLogs,
   getMerchantPools,
@@ -89,6 +106,7 @@ import {
   getMerchantWithdrawals,
   getMyMerchantApplication,
   syncMerchantQuotes,
+  updateMerchantQuotes,
   updateMerchantRate,
 } from './api'
 import { MerchantApplyForm } from './apply-form'
@@ -101,10 +119,12 @@ import {
 import { PAYOUT_METHOD_OPTIONS, getPayoutMethodLabel } from './payout-methods'
 import type {
   MerchantApplication,
+  MerchantBiddingEntry,
   MerchantCustomModelPrice,
   MerchantPoolChannel,
   MerchantPoolGroup,
   MerchantPoolMeta,
+  MerchantPortalQuote,
   MerchantProfile,
   MerchantWallet,
 } from './types'
@@ -353,17 +373,18 @@ export function Merchant() {
       }
 
       return (
-        <div className='mx-auto w-full max-w-2xl px-4 py-12'>
-          <Card>
-            <CardContent className='flex flex-col items-center space-y-5 py-10 text-center'>
-              <div className='bg-primary/10 text-primary flex size-14 items-center justify-center rounded-2xl'>
-                <Store className='size-7' />
-              </div>
-              <div className='space-y-2'>
-                <h1 className='text-xl font-semibold tracking-tight'>
+        <div className='mx-auto w-full max-w-6xl space-y-6 px-4 py-8'>
+          <div className='relative overflow-hidden rounded-2xl border bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6 text-white shadow-sm sm:p-8 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950'>
+            <div className='flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between'>
+              <div className='max-w-2xl space-y-3'>
+                <Badge className='border-white/20 bg-white/10 text-white hover:bg-white/15'>
+                  <Store className='mr-1.5 size-3.5' />
+                  {t('Merchant Partner Program')}
+                </Badge>
+                <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
                   {t('No Merchant Profile Yet')}
                 </h1>
-                <p className='text-muted-foreground max-w-lg text-sm leading-relaxed'>
+                <p className='text-sm leading-relaxed text-slate-300'>
                   {isAdminRole
                     ? t(
                         'Your administrator account has not been onboarded as a merchant yet. To review applications or manage existing shops, visit Merchant Management; or apply below to operate your own merchant shop.'
@@ -372,31 +393,111 @@ export function Merchant() {
                         'Your merchant profile is not active yet. Submit an onboarding application to create your shop profile, configure upstream channels, and start earning.'
                       )}
                 </p>
-              </div>
-              {status === 2 && applicationQuery.data?.review_note && (
-                <Alert variant='destructive' className='max-w-lg text-left'>
-                  <AlertTriangle className='size-4' />
-                  <AlertTitle>{t('Previous Application Rejected')}</AlertTitle>
-                  <AlertDescription className='text-xs'>
-                    {t('Review Note')}: {applicationQuery.data.review_note}
-                  </AlertDescription>
-                </Alert>
-              )}
-              <div className='flex flex-wrap items-center justify-center gap-3 pt-1'>
-                {isAdminRole && (
-                  <Button render={<Link to='/merchant-admin' />}>
-                    {t('Go to Merchant Management')}
+                <div className='flex flex-wrap items-center gap-3 pt-2'>
+                  {isAdminRole && (
+                    <Button
+                      className='bg-white text-slate-900 hover:bg-slate-100'
+                      render={<Link to='/merchant-admin' />}
+                    >
+                      <ShieldCheck className='mr-1.5 size-4' />
+                      {t('Go to Merchant Management')}
+                    </Button>
+                  )}
+                  <Button
+                    variant={isAdminRole ? 'outline' : 'default'}
+                    className={
+                      isAdminRole
+                        ? 'border-white/25 bg-white/5 text-white hover:bg-white/15 hover:text-white'
+                        : 'bg-white text-slate-900 hover:bg-slate-100'
+                    }
+                    onClick={() => setShowOnboardingForm(true)}
+                  >
+                    <Store className='mr-1.5 size-4' />
+                    {t('Apply to Become a Merchant')}
                   </Button>
-                )}
-                <Button
-                  variant={isAdminRole ? 'outline' : 'default'}
-                  onClick={() => setShowOnboardingForm(true)}
-                >
-                  {t('Apply to Become a Merchant')}
-                </Button>
+                </div>
               </div>
-            </CardContent>
-          </Card>
+
+              <div className='grid shrink-0 grid-cols-3 gap-2 rounded-xl border border-white/15 bg-white/5 p-3.5 text-center text-xs sm:min-w-[300px]'>
+                <div className='space-y-1.5 px-2'>
+                  <div className='mx-auto flex size-8 items-center justify-center rounded-full bg-white/15 font-semibold'>
+                    1
+                  </div>
+                  <p className='font-medium'>{t('Submit Profile')}</p>
+                </div>
+                <div className='space-y-1.5 px-2'>
+                  <div className='mx-auto flex size-8 items-center justify-center rounded-full bg-white/15 font-semibold'>
+                    2
+                  </div>
+                  <p className='font-medium'>{t('Admin Review')}</p>
+                </div>
+                <div className='space-y-1.5 px-2'>
+                  <div className='mx-auto flex size-8 items-center justify-center rounded-full bg-white/15 font-semibold'>
+                    3
+                  </div>
+                  <p className='font-medium'>{t('Launch Channels')}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {status === 2 && applicationQuery.data?.review_note && (
+            <Alert variant='destructive'>
+              <AlertTriangle className='size-4' />
+              <AlertTitle>{t('Previous Application Rejected')}</AlertTitle>
+              <AlertDescription className='text-xs'>
+                {t('Review Note')}: {applicationQuery.data.review_note}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <div className='grid gap-4 md:grid-cols-3'>
+            <Card className='border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-transparent to-transparent'>
+              <CardHeader className='flex flex-row items-center justify-between pb-2'>
+                <CardTitle className='text-sm font-medium'>
+                  {t('Settlement & Split Ratio')}
+                </CardTitle>
+                <TrendingUp className='size-4 text-emerald-500' />
+              </CardHeader>
+              <CardContent>
+                <p className='text-muted-foreground text-xs leading-relaxed'>
+                  {t(
+                    'Default revenue share is 95% merchant / 5% platform fee with configurable T+N settlement hold.'
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+            <Card className='border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-transparent to-transparent'>
+              <CardHeader className='flex flex-row items-center justify-between pb-2'>
+                <CardTitle className='text-sm font-medium'>
+                  {t('Shop Name Governance')}
+                </CardTitle>
+                <Layers className='size-4 text-sky-500' />
+              </CardHeader>
+              <CardContent>
+                <p className='text-muted-foreground text-xs leading-relaxed'>
+                  {t(
+                    'Shop Name identifies you across the Merchant Portal header, Finance Center reconciliation, and group prefixes. Renaming after approval requires admin review.'
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+            <Card className='border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-transparent to-transparent'>
+              <CardHeader className='flex flex-row items-center justify-between pb-2'>
+                <CardTitle className='text-sm font-medium'>
+                  {t('QR-Enabled Withdrawals')}
+                </CardTitle>
+                <QrCode className='size-4 text-violet-500' />
+              </CardHeader>
+              <CardContent>
+                <p className='text-muted-foreground text-xs leading-relaxed'>
+                  {t(
+                    'Upload your Alipay, WeChat, or USDT receipt QR code once. Finance officers scan the exact snapshotted code when settling your payouts.'
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       )
     }
@@ -484,222 +585,308 @@ function MerchantPortal() {
   }
 
   return (
-    <div className='mx-auto w-full max-w-6xl px-4 py-6'>
-      <div className='mb-4 flex flex-wrap items-start justify-between gap-3'>
-        <div className='space-y-1'>
-          <div className='flex flex-wrap items-center gap-2'>
-            <div className='bg-primary/10 text-primary flex size-8 items-center justify-center rounded-lg'>
-              <Store className='size-4' />
-            </div>
-            <h1 className='text-2xl font-bold tracking-tight'>
-              {displayShopName}
-            </h1>
-            <Badge variant='secondary'>{t('Merchant Portal')}</Badge>
-            {displayTenure && (
-              <Badge variant='outline'>
-                {t('Tenure')}: {tenureLabelKey ? t(tenureLabelKey) : displayTenure}
-              </Badge>
-            )}
+    <SectionPageLayout>
+      <SectionPageLayout.Title>
+        <div className='flex flex-wrap items-center gap-2.5'>
+          <div className='border-primary/20 bg-primary/10 text-primary flex size-9 items-center justify-center rounded-xl border'>
+            <Store className='size-5' />
           </div>
-          <div className='text-muted-foreground flex flex-wrap items-center gap-3 text-xs'>
-            {displayPlatformUrl && (
-              <a
-                href={displayPlatformUrl}
-                target='_blank'
-                rel='noreferrer'
-                className='text-foreground/80 hover:text-foreground inline-flex items-center gap-1 hover:underline'
-              >
-                <ExternalLink className='size-3' />
-                {t('Platform Website')}: {displayPlatformUrl}
-              </a>
-            )}
-            {summaryQuery.data?.site_url && (
-              <span>
-                {t('Primary Upstream')}: {summaryQuery.data.site_url}
-              </span>
-            )}
-          </div>
-        </div>
-        <Button
-          size='sm'
-          variant='outline'
-          onClick={() => {
-            setRequestedShopName('')
-            setRenameReason('')
-            setRenameOpen(true)
-          }}
-        >
-          <PencilLine className='mr-1.5 size-3.5' />
-          {t('Request Shop Rename')}
-        </Button>
-      </div>
-      <div className='mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>{t('24h Calls')}</p>
-            <p className='text-2xl font-bold'>
-              {formatNumber(traffic?.calls ?? 0, locale)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>{t('24h Revenue')}</p>
-            <p className='text-2xl font-bold'>
-              {formatUsd(traffic?.quota_usd)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>
-              {t('24h Success Rate')}
-            </p>
-            <p className='text-2xl font-bold'>
-              {(traffic?.success_rate ?? 0).toFixed(2)}%
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>
-              {t('Wallet Balance')}
-            </p>
-            <p className='text-2xl font-bold'>{formatUsd(wallet?.balance)}</p>
-            <p className='text-muted-foreground text-xs'>
-              {t('Profit ratio')}:{' '}
-              {((summaryQuery.data?.profit_ratio ?? 0) * 100).toFixed(0)}%
-              {(wallet?.pending_balance ?? 0) > 0 && (
-                <>
-                  {' · '}
-                  {t('T+N pending')}: {formatUsd(wallet?.pending_balance)}
-                </>
-              )}
-              {(wallet?.frozen_balance ?? 0) > 0 && (
-                <>
-                  {' · '}
-                  {t('Frozen')}: {formatUsd(wallet?.frozen_balance)}
-                </>
-              )}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className='mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/20 px-4 py-2.5 text-xs'>
-        <div className='flex flex-wrap items-center gap-3'>
+          <span>{displayShopName}</span>
+          <Badge variant='secondary'>{t('Merchant Portal')}</Badge>
           {profile?.merchant_code && (
-            <Badge variant='outline' className='font-mono'>
-              {t('Code')}: {profile.merchant_code}
+            <Badge variant='outline' className='font-mono text-xs'>
+              {profile.merchant_code}
             </Badge>
           )}
-          <span className='text-muted-foreground'>
-            {t('Contact')}:{' '}
-            <span className='text-foreground'>
-              {profile?.contact_name || '--'}{' '}
-              {profile?.contact_info ? `(${profile.contact_info})` : ''}
-            </span>
-          </span>
-          <span className='text-muted-foreground'>
-            {t('Bound Payout')}:{' '}
-            <span className='text-foreground'>
-              {profile?.payout_method
-                ? `${t(getPayoutMethodLabel(profile.payout_method))} · ${profile.payout_account || '--'}`
-                : t('Not bound yet')}
-            </span>
-          </span>
-          {isValidPayoutQrDataUrl(profile?.payout_qrcode) && (
-            <Badge variant='outline' className='gap-1 text-[11px]'>
-              <QrCode className='size-3 text-emerald-500' />
-              {t('QR Bound')}
+          {displayTenure && (
+            <Badge variant='outline' className='text-xs'>
+              {t('Tenure')}: {tenureLabelKey ? t(tenureLabelKey) : displayTenure}
             </Badge>
           )}
-          <span className='text-muted-foreground'>
-            {t('Settlement')}: T+{profile?.settle_hold_days ?? 0}
-            {(profile?.min_withdraw ?? 0) > 0
-              ? ` · ${t('Min withdraw')}: ${formatUsd(profile?.min_withdraw)}`
-              : ''}
-          </span>
         </div>
-        <Button
-          size='sm'
-          variant='outline'
-          className='h-7'
-          onClick={() => setProfileOpen(true)}
-        >
-          {t('Contact & Payout Profile')}
-        </Button>
-      </div>
+      </SectionPageLayout.Title>
 
-      {!!groups.length && (
-        <div className='mb-6 rounded-xl border'>
-          <div className='text-muted-foreground grid grid-cols-[1.3fr_1fr_1fr_1fr_0.8fr] gap-2 border-b px-3 py-2 text-xs'>
-            <span>{t('Pool')}</span>
-            <span>{t('24h Calls')}</span>
-            <span>{t('24h Revenue')}</span>
-            <span>{t('24h Success Rate')}</span>
-            <span className='text-right'>{t('Share')}</span>
-          </div>
-          <div className='divide-y'>
-            {groups.map((g) => (
-              <div
-                key={g.group || '__default__'}
-                className='grid grid-cols-[1.3fr_1fr_1fr_1fr_0.8fr] items-center gap-2 px-3 py-2 text-sm'
-              >
-                <span className='truncate font-mono'>
-                  {g.group || t('Default')}
-                </span>
-                <span>{formatNumber(g.calls, locale)}</span>
-                <span>{formatUsd(g.quota_usd)}</span>
-                <span>{g.success_rate.toFixed(2)}%</span>
-                <span className='text-muted-foreground text-right'>
-                  {totalGroupCalls > 0
-                    ? `${((g.calls / totalGroupCalls) * 100).toFixed(1)}%`
-                    : '--'}
-                </span>
+      <SectionPageLayout.Actions>
+        <div className='flex flex-wrap items-center gap-2'>
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() =>
+              queryClient.invalidateQueries({ queryKey: ['merchant'] })
+            }
+          >
+            <RefreshCw className='mr-1.5 size-3.5' />
+            {t('Refresh')}
+          </Button>
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => setProfileOpen(true)}
+          >
+            <QrCode className='mr-1.5 size-3.5' />
+            {t('Contact & Payout Profile')}
+          </Button>
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => {
+              setRequestedShopName('')
+              setRenameReason('')
+              setRenameOpen(true)
+            }}
+          >
+            <PencilLine className='mr-1.5 size-3.5' />
+            {t('Request Shop Rename')}
+          </Button>
+        </div>
+      </SectionPageLayout.Actions>
+
+      <SectionPageLayout.Content className='space-y-6'>
+        <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
+          <Card className='border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-transparent to-transparent'>
+            <CardHeader className='flex flex-row items-center justify-between pb-2'>
+              <CardTitle className='text-muted-foreground text-sm font-medium'>
+                {t('24h Calls')}
+              </CardTitle>
+              <Activity className='size-4 text-sky-500' />
+            </CardHeader>
+            <CardContent>
+              <div className='text-2xl font-bold tabular-nums'>
+                {formatNumber(traffic?.calls ?? 0, locale)}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {groups.length > 0
+                  ? `${groups.length} ${t('Pool')}`
+                  : t('Platform Website')}
+              </p>
+            </CardContent>
+          </Card>
 
-      <Tabs defaultValue='pools'>
-        <TabsList>
-          <TabsTrigger value='pools'>{t('Pool Market')}</TabsTrigger>
-          <TabsTrigger value='quotes'>{t('Quote Board')}</TabsTrigger>
-          <TabsTrigger value='usage'>{t('Usage Records')}</TabsTrigger>
-          <TabsTrigger value='earnings'>{t('Earnings Ledger')}</TabsTrigger>
-          <TabsTrigger value='withdrawals'>{t('Withdrawals')}</TabsTrigger>
-        </TabsList>
-        <TabsContent value='pools'>
-          <MerchantPoolsTab
-            onChanged={() =>
-              queryClient.invalidateQueries({ queryKey: ['merchant'] })
-            }
-          />
-        </TabsContent>
-        <TabsContent value='quotes'>
-          <MerchantQuotesTab />
-        </TabsContent>
-        <TabsContent value='usage'>
-          <MerchantLogsTab
-            groups={groups.map((g) => g.group).filter(Boolean)}
-          />
-        </TabsContent>
-        <TabsContent value='earnings'>
-          <MerchantEarningsTab />
-        </TabsContent>
-        <TabsContent value='withdrawals'>
-          <MerchantWithdrawalsTab
-            balance={wallet?.balance ?? 0}
-            wallet={wallet}
-            profile={profile}
-            onChanged={() =>
-              queryClient.invalidateQueries({ queryKey: ['merchant'] })
-            }
-          />
-        </TabsContent>
-      </Tabs>
+          <Card className='border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-transparent to-transparent'>
+            <CardHeader className='flex flex-row items-center justify-between pb-2'>
+              <CardTitle className='text-muted-foreground text-sm font-medium'>
+                {t('24h Revenue')}
+              </CardTitle>
+              <TrendingUp className='size-4 text-emerald-500' />
+            </CardHeader>
+            <CardContent>
+              <div className='text-2xl font-bold tabular-nums'>
+                {formatUsd(traffic?.quota_usd)}
+              </div>
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {t('Profit ratio')}:{' '}
+                {((summaryQuery.data?.profit_ratio ?? 0) * 100).toFixed(0)}%
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className='border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-transparent to-transparent'>
+            <CardHeader className='flex flex-row items-center justify-between pb-2'>
+              <CardTitle className='text-muted-foreground text-sm font-medium'>
+                {t('24h Success Rate')}
+              </CardTitle>
+              <CheckCircle2 className='size-4 text-violet-500' />
+            </CardHeader>
+            <CardContent>
+              <div className='text-2xl font-bold tabular-nums'>
+                {(traffic?.success_rate ?? 0).toFixed(2)}%
+              </div>
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {t('Settlement')}: T+{profile?.settle_hold_days ?? 0}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className='border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-transparent to-transparent'>
+            <CardHeader className='flex flex-row items-center justify-between pb-2'>
+              <CardTitle className='text-muted-foreground text-sm font-medium'>
+                {t('Wallet Balance')}
+              </CardTitle>
+              <Wallet className='size-4 text-amber-500' />
+            </CardHeader>
+            <CardContent>
+              <div className='text-2xl font-bold tabular-nums'>
+                {formatUsd(wallet?.balance)}
+              </div>
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {(wallet?.pending_balance ?? 0) > 0
+                  ? `${t('T+N pending')}: ${formatUsd(wallet?.pending_balance)}`
+                  : `${t('Min withdraw')}: ${formatUsd(profile?.min_withdraw ?? 0)}`}
+                {(wallet?.frozen_balance ?? 0) > 0 &&
+                  ` · ${t('Frozen')}: ${formatUsd(wallet?.frozen_balance)}`}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className='bg-muted/20'>
+          <CardContent className='grid gap-4 py-4 sm:grid-cols-2 lg:grid-cols-4'>
+            <div className='flex items-start gap-2.5'>
+              <Globe className='text-muted-foreground mt-0.5 size-4 shrink-0' />
+              <div className='min-w-0 space-y-0.5'>
+                <p className='text-muted-foreground text-xs'>
+                  {t('Platform Website')}
+                </p>
+                {displayPlatformUrl ? (
+                  <a
+                    href={displayPlatformUrl}
+                    target='_blank'
+                    rel='noreferrer'
+                    className='text-foreground inline-flex max-w-full items-center gap-1 truncate text-xs font-medium hover:underline'
+                  >
+                    <span className='truncate'>{displayPlatformUrl}</span>
+                    <ExternalLink className='size-3 shrink-0' />
+                  </a>
+                ) : (
+                  <p className='text-muted-foreground text-xs'>
+                    {summaryQuery.data?.site_url || '--'}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className='flex items-start gap-2.5'>
+              <UserCheck className='text-muted-foreground mt-0.5 size-4 shrink-0' />
+              <div className='min-w-0 space-y-0.5'>
+                <p className='text-muted-foreground text-xs'>{t('Contact')}</p>
+                <p className='truncate text-xs font-medium'>
+                  {profile?.contact_name || '--'}
+                  {profile?.contact_info ? ` · ${profile.contact_info}` : ''}
+                </p>
+              </div>
+            </div>
+
+            <div className='flex items-start gap-2.5'>
+              <QrCode className='text-muted-foreground mt-0.5 size-4 shrink-0' />
+              <div className='min-w-0 space-y-0.5'>
+                <p className='text-muted-foreground text-xs'>
+                  {t('Bound Payout')}
+                </p>
+                <div className='flex flex-wrap items-center gap-1.5'>
+                  <span className='truncate text-xs font-medium'>
+                    {profile?.payout_method
+                      ? `${t(getPayoutMethodLabel(profile.payout_method))} · ${profile.payout_account || '--'}`
+                      : t('Not bound yet')}
+                  </span>
+                  {isValidPayoutQrDataUrl(profile?.payout_qrcode) && (
+                    <Badge variant='outline' className='h-5 gap-1 px-1.5 text-[10px]'>
+                      <QrCode className='size-2.5 text-emerald-500' />
+                      {t('QR Bound')}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className='flex items-start gap-2.5'>
+              <Clock className='text-muted-foreground mt-0.5 size-4 shrink-0' />
+              <div className='min-w-0 space-y-0.5'>
+                <p className='text-muted-foreground text-xs'>
+                  {t('Settlement')}
+                </p>
+                <p className='font-mono text-xs font-medium'>
+                  T+{profile?.settle_hold_days ?? 0} ·{' '}
+                  {t('Profit ratio')}{' '}
+                  {((summaryQuery.data?.profit_ratio ?? 0) * 100).toFixed(0)}%
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {!!groups.length && (
+          <div className='overflow-x-auto rounded-xl border'>
+            <div className='min-w-[540px]'>
+              <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1.3fr_1fr_1fr_1fr_0.8fr] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+                <span>{t('Pool')}</span>
+                <span>{t('24h Calls')}</span>
+                <span>{t('24h Revenue')}</span>
+                <span>{t('24h Success Rate')}</span>
+                <span className='text-right'>{t('Share')}</span>
+              </div>
+              <div className='divide-y'>
+                {groups.map((g) => (
+                  <div
+                    key={g.group || '__default__'}
+                    className='hover:bg-muted/35 grid grid-cols-[1.3fr_1fr_1fr_1fr_0.8fr] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+                  >
+                    <span className='truncate font-mono font-medium'>
+                      {g.group || t('Default')}
+                    </span>
+                    <span className='font-mono tabular-nums'>
+                      {formatNumber(g.calls, locale)}
+                    </span>
+                    <span className='font-mono tabular-nums'>
+                      {formatUsd(g.quota_usd)}
+                    </span>
+                    <span className='font-mono tabular-nums'>
+                      {g.success_rate.toFixed(2)}%
+                    </span>
+                    <span className='text-muted-foreground text-right font-mono tabular-nums'>
+                      {totalGroupCalls > 0
+                        ? `${((g.calls / totalGroupCalls) * 100).toFixed(1)}%`
+                        : '--'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <Tabs defaultValue='pools' className='space-y-4'>
+          <TabsList className='flex-wrap'>
+            <TabsTrigger value='pools' className='gap-1.5'>
+              <Layers className='size-3.5' />
+              {t('Pool Market')}
+            </TabsTrigger>
+            <TabsTrigger value='quotes' className='gap-1.5'>
+              <FileSpreadsheet className='size-3.5' />
+              {t('Quote Board')}
+            </TabsTrigger>
+            <TabsTrigger value='usage' className='gap-1.5'>
+              <Activity className='size-3.5' />
+              {t('Usage Records')}
+            </TabsTrigger>
+            <TabsTrigger value='earnings' className='gap-1.5'>
+              <BarChart3 className='size-3.5' />
+              {t('Earnings Ledger')}
+            </TabsTrigger>
+            <TabsTrigger value='withdrawals' className='gap-1.5'>
+              <ReceiptText className='size-3.5' />
+              {t('Withdrawals')}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value='pools'>
+            <MerchantPoolsTab
+              onChanged={() =>
+                queryClient.invalidateQueries({ queryKey: ['merchant'] })
+              }
+            />
+          </TabsContent>
+          <TabsContent value='quotes'>
+            <MerchantQuotesTab />
+          </TabsContent>
+          <TabsContent value='usage'>
+            <MerchantLogsTab
+              groups={groups.map((g) => g.group).filter(Boolean)}
+            />
+          </TabsContent>
+          <TabsContent value='earnings'>
+            <MerchantEarningsTab />
+          </TabsContent>
+          <TabsContent value='withdrawals'>
+            <MerchantWithdrawalsTab
+              balance={wallet?.balance ?? 0}
+              wallet={wallet}
+              profile={profile}
+              onChanged={() =>
+                queryClient.invalidateQueries({ queryKey: ['merchant'] })
+              }
+            />
+          </TabsContent>
+        </Tabs>
+      </SectionPageLayout.Content>
 
       <MerchantProfileSettingsDialog
         open={profileOpen}
@@ -758,7 +945,7 @@ function MerchantPortal() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </SectionPageLayout>
   )
 }
 
@@ -789,6 +976,8 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
   // 第二层选中的分组；null 表示停留在第一层分组市场
   const [selectedPool, setSelectedPool] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [groupSearch, setGroupSearch] = useState('')
+  const [groupFilter, setGroupFilter] = useState<'all' | 'joined' | 'exclusive'>('all')
 
   const allPools = poolsQuery.data?.all_pools ?? []
   const groups = poolsQuery.data?.groups ?? []
@@ -797,6 +986,26 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
   const merchantUserId = poolsQuery.data?.merchant_user_id
   const customModelPrices = poolsQuery.data?.custom_model_prices
   const groupByPool = new Map(groups.map((group) => [group.pool, group]))
+
+  const joinedCount = allPools.filter((pool) => (groupByPool.get(pool)?.channels.length ?? 0) > 0).length
+  const exclusiveCount = allPools.filter((pool) =>
+    Boolean(poolMeta[pool]?.is_merchant_group ?? groupByPool.get(pool)?.is_merchant_group)
+  ).length
+
+  const visiblePools = allPools.filter((pool) => {
+    const group = groupByPool.get(pool)
+    const meta = poolMeta[pool]
+    const joined = group?.channels.length ?? 0
+    const isExclusive = Boolean(meta?.is_merchant_group ?? group?.is_merchant_group)
+    if (groupFilter === 'joined' && joined === 0) return false
+    if (groupFilter === 'exclusive' && !isExclusive) return false
+    const kw = groupSearch.trim().toLowerCase()
+    if (kw) {
+      const desc = (meta?.group_desc ?? group?.group_desc ?? '').toLowerCase()
+      if (!pool.toLowerCase().includes(kw) && !desc.includes(kw)) return false
+    }
+    return true
+  })
 
   /** 扩容申请提交成功后关闭表单并刷新门户数据。 */
   function handleAdded() {
@@ -833,11 +1042,63 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
 
   return (
     <div className='space-y-4'>
-      <div className='flex flex-wrap items-center justify-between gap-2'>
-        <p className='text-muted-foreground text-xs'>
-          {t('价格由所属分组的原生 GroupRatio 决定；创建专属分组或修改分组倍率 / Auto 路由均需管理员审核。')}
-        </p>
+      <div className='bg-muted/25 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3.5'>
+        <div className='space-y-1.5'>
+          <div className='flex flex-wrap items-center gap-2'>
+            <div className='relative w-56 max-w-full'>
+              <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2' />
+              <Input
+                value={groupSearch}
+                onChange={(e) => setGroupSearch(e.target.value)}
+                placeholder={t('Search group name...')}
+                className='bg-background h-8 pl-8 text-xs'
+              />
+            </div>
+            <div className='bg-background inline-flex items-center rounded-lg border p-0.5 text-xs'>
+              <button
+                type='button'
+                onClick={() => setGroupFilter('all')}
+                className={cn(
+                  'rounded-md px-2.5 py-1 transition-colors',
+                  groupFilter === 'all'
+                    ? 'bg-primary text-primary-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {t('All')} ({allPools.length})
+              </button>
+              <button
+                type='button'
+                onClick={() => setGroupFilter('joined')}
+                className={cn(
+                  'rounded-md px-2.5 py-1 transition-colors',
+                  groupFilter === 'joined'
+                    ? 'bg-primary text-primary-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {t('Joined')} ({joinedCount})
+              </button>
+              <button
+                type='button'
+                onClick={() => setGroupFilter('exclusive')}
+                className={cn(
+                  'rounded-md px-2.5 py-1 transition-colors',
+                  groupFilter === 'exclusive'
+                    ? 'bg-primary text-primary-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {t('Exclusive Groups')} ({exclusiveCount})
+              </button>
+            </div>
+          </div>
+          <p className='text-muted-foreground text-xs'>
+            {t('价格由所属分组的原生 GroupRatio 决定；创建专属分组或修改分组倍率 / Auto 路由均需管理员审核。')}
+          </p>
+        </div>
         <Button size='sm' onClick={() => setAdding(true)}>
+          <Plus className='mr-1.5 size-3.5' />
           {t('新建专属分组 / 接入新渠道')}
         </Button>
       </div>
@@ -851,8 +1112,8 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
         </Alert>
       )}
 
-      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
-        {allPools.map((pool) => {
+      <div className='grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3'>
+        {visiblePools.map((pool) => {
           const group = groupByPool.get(pool)
           const meta = poolMeta[pool]
           const groupRatio = meta?.group_ratio ?? group?.group_ratio ?? 1
@@ -876,7 +1137,9 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
             className={cn(
               'group cursor-pointer outline-none transition-all',
               'hover:border-primary/60 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring',
-              joined > 0 ? 'border-primary/40' : 'border-border'
+              joined > 0
+                ? 'border-primary/35 bg-gradient-to-br from-primary/5 via-transparent to-transparent'
+                : 'border-border'
             )}
             onClick={() => setSelectedPool(pool)}
             onKeyDown={(e) => {
@@ -888,9 +1151,9 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
           >
             <CardContent className='space-y-3 py-4'>
               <div className='flex items-center justify-between gap-2'>
-                <span className='truncate font-mono font-medium'>{pool}</span>
+                <span className='truncate font-mono text-base font-semibold'>{pool}</span>
                 <div className='flex shrink-0 items-center gap-1.5'>
-                  <Badge variant='outline'>
+                  <Badge variant='outline' className='font-mono'>
                     {`×${groupRatio.toFixed(2)}`}
                   </Badge>
                   <Badge variant={joined > 0 ? 'default' : 'secondary'}>
@@ -918,43 +1181,47 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
                 </div>
               )}
               <div className='text-muted-foreground grid grid-cols-3 gap-2 text-xs'>
-                <div>
+                <div className='bg-muted/35 rounded-lg px-2.5 py-1.5'>
                   <p>{t('24h Calls')}</p>
-                  <p className='text-foreground font-mono'>
+                  <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
                     {formatNumber(group?.calls_24h ?? 0, locale)}
                   </p>
                 </div>
-                <div>
+                <div className='bg-muted/35 rounded-lg px-2.5 py-1.5'>
                   <p>{t('24h Revenue')}</p>
-                  <p className='text-foreground font-mono'>
+                  <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
                     {formatUsd(group?.quota_usd_24h ?? 0)}
                   </p>
                 </div>
-                <div>
+                <div className='bg-muted/35 rounded-lg px-2.5 py-1.5'>
                   <p>{t('24h Success Rate')}</p>
-                  <p className='text-foreground font-mono'>
+                  <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
                     {formatSuccessRate(group?.success_rate, hasCalls)}
                   </p>
                 </div>
               </div>
-              <div className='text-primary/70 group-hover:text-primary flex items-center gap-1 border-t pt-2 text-xs font-medium'>
-                {joined > 0
-                  ? t('Click to view my channels')
-                  : t('Click to join this pool')}
+              <div className='text-primary/75 group-hover:text-primary flex items-center justify-between border-t pt-2.5 text-xs font-medium'>
+                <span>
+                  {joined > 0
+                    ? t('Click to view my channels')
+                    : t('Click to join this pool')}
+                </span>
+                <ChevronRight aria-hidden className='size-3.5 transition-transform group-hover:translate-x-0.5' />
               </div>
             </CardContent>
           </Card>
         )
       })}
-      {!allPools.length && (
-        <div className='text-muted-foreground col-span-full rounded-xl border px-3 py-8 text-center'>
-          {t('No pools available yet')}
+      {!visiblePools.length && (
+        <div className='text-muted-foreground col-span-full flex flex-col items-center gap-2 rounded-xl border px-3 py-10 text-center text-sm'>
+          <Layers className='text-muted-foreground/50 size-7' />
+          <span>{t('No pools available yet')}</span>
         </div>
       )}
       </div>
 
       <Dialog open={adding} onOpenChange={(open) => !open && setAdding(false)}>
-        <DialogContent>
+        <DialogContent className='max-h-[88vh] overflow-y-auto sm:max-w-2xl'>
           <DialogHeader>
             <DialogTitle>{t('新建专属分组 / 接入新渠道')}</DialogTitle>
             <DialogDescription>
@@ -1010,14 +1277,15 @@ function PoolGroupDetail({
   const groupDesc = meta?.group_desc ?? group?.group_desc ?? ''
 
   return (
-    <div className='space-y-3'>
-      <div className='flex flex-wrap items-center justify-between gap-2'>
+    <div className='space-y-4'>
+      <div className='border-primary/20 bg-gradient-to-r from-primary/5 via-transparent to-transparent flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4'>
         <div className='flex flex-wrap items-center gap-2'>
           <Button variant='outline' size='sm' onClick={onBack}>
+            <ArrowLeft className='mr-1.5 size-3.5' />
             {t('Back')}
           </Button>
-          <span className='font-mono text-lg font-medium'>{pool}</span>
-          <Badge variant='outline'>{`×${groupRatio.toFixed(2)}`}</Badge>
+          <span className='font-mono text-lg font-semibold'>{pool}</span>
+          <Badge variant='outline' className='font-mono'>{`×${groupRatio.toFixed(2)}`}</Badge>
           {inAutoGroup && <Badge variant='secondary'>{t('Auto 路由')}</Badge>}
           {isMerchantGroup && (
             <Badge variant='secondary'>{t('我的专属分组')}</Badge>
@@ -1036,16 +1304,18 @@ function PoolGroupDetail({
               size='sm'
               onClick={() => setEditingGroup(true)}
             >
+              <PencilLine className='mr-1.5 size-3.5' />
               {t('申请调整分组倍率 / Auto 路由')}
             </Button>
           )}
           <Button size='sm' onClick={onAddChannel}>
+            <Plus className='mr-1.5 size-3.5' />
             {t('Add Channel')}
           </Button>
         </div>
       </div>
 
-      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
+      <div className='grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3'>
         {channels.map((channel) => (
           <ChannelCard
             key={channel.channel_id}
@@ -1058,14 +1328,19 @@ function PoolGroupDetail({
           />
         ))}
         {!channels.length && (
-          <div className='text-muted-foreground col-span-full rounded-xl border px-3 py-8 text-center'>
-            {t('No channels in this pool yet')}
+          <div className='text-muted-foreground col-span-full flex flex-col items-center gap-3 rounded-xl border border-dashed px-4 py-12 text-center text-sm'>
+            <Layers className='text-muted-foreground/50 size-8' />
+            <span>{t('No channels in this pool yet')}</span>
+            <Button size='sm' variant='outline' onClick={onAddChannel}>
+              <Plus className='mr-1.5 size-3.5' />
+              {t('Add Channel')}
+            </Button>
           </div>
         )}
       </div>
 
       <Dialog open={adding} onOpenChange={(open) => !open && onCloseAdd()}>
-        <DialogContent>
+        <DialogContent className='max-h-[88vh] overflow-y-auto sm:max-w-2xl'>
           <DialogHeader>
             <DialogTitle>{t('Add Channel')}</DialogTitle>
             <DialogDescription>
@@ -1157,50 +1432,55 @@ function ChannelCard({
   }
 
   return (
-    <Card>
+    <Card className={cn('transition-all hover:shadow-sm', channel.status !== 1 && 'opacity-80')}>
       <CardContent className='space-y-3 py-4'>
         <div className='flex items-center justify-between gap-2'>
-          <span className='truncate font-medium'>
-            {channel.name || `#${channel.channel_id}`}
-          </span>
+          <div className='flex min-w-0 items-center gap-2'>
+            <Badge variant='outline' className='shrink-0 font-mono text-[11px]'>
+              #{channel.channel_id}
+            </Badge>
+            <span className='truncate font-semibold'>
+              {channel.name || `#${channel.channel_id}`}
+            </span>
+          </div>
           <Badge variant={channel.status === 1 ? 'default' : 'destructive'}>
             {channel.status === 1 ? t('Enabled') : t('Disabled')}
           </Badge>
         </div>
-        <div className='text-muted-foreground grid grid-cols-2 gap-x-3 gap-y-2 text-xs'>
-          <div>
+        <div className='text-muted-foreground grid grid-cols-2 gap-2 text-xs'>
+          <div className='bg-muted/30 rounded-lg px-2.5 py-2'>
             <p>{t('Rate Multiplier')}</p>
-            <p className='text-foreground font-mono'>
+            <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
               {formatRate(channel.rate_multiplier)}
             </p>
           </div>
-          <div>
+          <div className='bg-muted/30 rounded-lg px-2.5 py-2'>
             <p>{t('Avg Latency')}</p>
-            <p className='text-foreground font-mono'>
+            <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
               {formatLatency(channel.avg_use_time, hasCalls)}
             </p>
           </div>
-          <div>
+          <div className='bg-muted/30 rounded-lg px-2.5 py-2'>
             <p>{t('24h Success Rate')}</p>
-            <p className='text-foreground font-mono'>
+            <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
               {formatSuccessRate(channel.success_rate, hasCalls)}
             </p>
           </div>
-          <div>
+          <div className='bg-muted/30 rounded-lg px-2.5 py-2'>
             <p>{t('24h Calls')}</p>
-            <p className='text-foreground font-mono'>
+            <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
               {formatNumber(channel.calls_24h, locale)}
             </p>
           </div>
-          <div>
+          <div className='bg-muted/30 rounded-lg px-2.5 py-2'>
             <p>{t('24h Revenue')}</p>
-            <p className='text-foreground font-mono'>
+            <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>
               {formatUsd(channel.quota_usd_24h)}
             </p>
           </div>
-          <div>
+          <div className='bg-muted/30 rounded-lg px-2.5 py-2'>
             <p>{t('Models')}</p>
-            <p className='text-foreground font-mono'>{channel.models.length}</p>
+            <p className='text-foreground mt-0.5 font-mono font-semibold tabular-nums'>{channel.models.length}</p>
           </div>
         </div>
         {channel.price_sync ? (
@@ -1299,8 +1579,8 @@ function GroupRateEditForm({
 
   async function save() {
     const value = Number(rate)
-    if (!Number.isFinite(value) || value <= 0 || value > 100) {
-      toast.error(t('分组倍率需在 0（不含）到 100 之间'))
+    if (!Number.isFinite(value) || value < 0.01 || value > 100) {
+      toast.error(t('分组倍率需在 0.01 到 100 之间'))
       return
     }
     setSaving(true)
@@ -1311,7 +1591,7 @@ function GroupRateEditForm({
         group_desc: desc.trim(),
         join_auto_group: joinAuto,
       })
-      toast.success(t('分组变更申请已提交，等待管理员审核'))
+      toast.success(t('分组倍率与路由设置已立即生效'))
       onSaved()
     } catch (error) {
       handleServerError(error, t('Failed to update rate'))
@@ -1337,7 +1617,7 @@ function GroupRateEditForm({
         />
         <p className='text-muted-foreground text-xs'>
           {t(
-            '1.0 = 平台标准价，0.5 = 五折；审核通过后将同步更新分组倍率并重算盘口。'
+            '1.0 = 平台标准价，0.5 = 五折；保存后立即生效并重算派生盘口，无需审核。'
           )}
         </p>
       </div>
@@ -1366,25 +1646,96 @@ function GroupRateEditForm({
         />
       </div>
       <Button onClick={save} disabled={saving}>
-        {t('提交变更审核')}
+        {t('保存并立即生效')}
       </Button>
     </div>
   )
 }
 
-/** 「报价面板」：只读展示渠道的模型报价与倍率，价格不可在商家侧编辑。 */
+/** 「实时竞价与报价面板」：展示实测 TTFT/TPS、全网排名，并支持单模型即时改价（无需审核）。 */
 function MerchantQuotesTab() {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const quotesQuery = useQuery({
     queryKey: ['merchant', 'quotes'],
     queryFn: getMerchantQuotes,
   })
+  const biddingQuery = useQuery({
+    queryKey: ['merchant', 'bidding'],
+    queryFn: getMerchantBidding,
+  })
   const quotes = quotesQuery.data
+  const biddingByKey = useMemo(() => {
+    const map = new Map<string, MerchantBiddingEntry>()
+    for (const entry of biddingQuery.data?.items ?? []) {
+      map.set(`${entry.channel_id}|${entry.pool_group}|${entry.model_name}`, entry)
+    }
+    return map
+  }, [biddingQuery.data])
 
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [source, setSource] = useState('all')
   const [pool, setPool] = useState('all')
+  const [showApiGuide, setShowApiGuide] = useState(false)
+  const [copiedMerchantCurl, setCopiedMerchantCurl] = useState(false)
+  const [editingQuote, setEditingQuote] = useState<MerchantPortalQuote | null>(null)
+  const [bidInputPrice, setBidInputPrice] = useState('')
+  const [bidOutputPrice, setBidOutputPrice] = useState('')
+  const [bidSaving, setBidSaving] = useState(false)
+
+  const openEditQuote = (q: MerchantPortalQuote) => {
+    setEditingQuote(q)
+    setBidInputPrice(String(q.input_price))
+    setBidOutputPrice(String(q.output_price))
+  }
+
+  const submitQuoteBid = async (resetToDerived = false) => {
+    if (!editingQuote) return
+    setBidSaving(true)
+    try {
+      if (resetToDerived) {
+        await updateMerchantQuotes({
+          channel_id: editingQuote.channel_id,
+          pool_group: editingQuote.pool_group,
+          model_name: editingQuote.model_name,
+          reset_to_derived: true,
+        })
+        toast.success(t('已恢复为分组派生价并立即生效'))
+      } else {
+        const inputVal = Number(bidInputPrice)
+        const outputVal = Number(bidOutputPrice)
+        if (
+          !Number.isFinite(inputVal) ||
+          inputVal < 0.001 ||
+          inputVal > 10000 ||
+          !Number.isFinite(outputVal) ||
+          outputVal < 0.001 ||
+          outputVal > 10000
+        ) {
+          toast.error(t('输入/输出单价需在 0.001 ~ 10000 USD/1M 之间'))
+          return
+        }
+        await updateMerchantQuotes({
+          channel_id: editingQuote.channel_id,
+          pool_group: editingQuote.pool_group,
+          model_name: editingQuote.model_name,
+          input_price: inputVal,
+          output_price: outputVal,
+        })
+        toast.success(t('实时出价已更新并立即参与 Order-Book 路由'))
+      }
+      setEditingQuote(null)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['merchant', 'quotes'] }),
+        queryClient.invalidateQueries({ queryKey: ['merchant', 'bidding'] }),
+      ])
+    } catch (error) {
+      handleServerError(error, t('Failed to update quote'))
+    } finally {
+      setBidSaving(false)
+    }
+  }
 
   const pools = useMemo(
     () => [...new Set((quotes ?? []).map((q) => q.pool_group))].sort(),
@@ -1405,10 +1756,13 @@ function MerchantQuotesTab() {
     return true
   })
 
-  /** 报价来源徽标：auto=上游自动同步 / derived=平台标准价×渠道倍率 / manual=管理员锁定。 */
+  /** 报价来源徽标：merchant=商家实时出价 / auto=上游自动同步 / derived=派生价 / manual=管理员锁定。 */
   const sourceBadge = (s: string) => {
+    if (s === 'merchant') {
+      return <Badge variant='default'>{t('实时出价')}</Badge>
+    }
     if (s === 'auto') {
-      return <Badge variant='default'>{t('Auto')}</Badge>
+      return <Badge variant='secondary'>{t('Auto')}</Badge>
     }
     if (s === 'manual') {
       return <Badge variant='outline'>{t('Manual')}</Badge>
@@ -1442,6 +1796,7 @@ function MerchantQuotesTab() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value='all'>{t('All')}</SelectItem>
+              <SelectItem value='merchant'>{t('实时出价')}</SelectItem>
               <SelectItem value='auto'>{t('Auto')}</SelectItem>
               <SelectItem value='derived'>{t('Derived')}</SelectItem>
               <SelectItem value='manual'>{t('Manual')}</SelectItem>
@@ -1470,61 +1825,205 @@ function MerchantQuotesTab() {
         >
           {t('Search')}
         </Button>
+        <Button
+          variant='outline'
+          size='sm'
+          onClick={() => setShowApiGuide((prev) => !prev)}
+        >
+          {showApiGuide ? t('收起调价 API 说明') : t('自动化调价 API')}
+        </Button>
         <span className='text-muted-foreground ml-auto text-xs'>
           {t('{{count}} quotes', { count: filtered.length })}
         </span>
       </div>
+
+      {showApiGuide && (
+        <div className='bg-muted/35 space-y-2.5 rounded-lg border p-3.5 text-xs'>
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <div className='font-medium'>
+              {t('商家实时竞价 API（无需审核，使用安全设置中的 Personal Access Token 作为 Bearer Token）')}
+            </div>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              className='h-7 gap-1 px-2 text-[11px]'
+              onClick={async () => {
+                const origin =
+                  typeof window !== 'undefined' && window.location?.origin
+                    ? window.location.origin
+                    : 'https://your-gateway.example.com'
+                const snippet = `curl -X PUT ${origin}/api/merchant/portal/quotes \\\n  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \\\n  -H "Content-Type: application/json" \\\n  -d '{"items":[{"channel_id":1,"pool_group":"default","model_name":"gpt-4o","input_price":1.5,"output_price":6.0}]}'`
+                try {
+                  await navigator.clipboard.writeText(snippet)
+                  setCopiedMerchantCurl(true)
+                  toast.success(t('已复制调价 cURL 示例'))
+                  setTimeout(() => setCopiedMerchantCurl(false), 1800)
+                } catch {
+                  toast.error(t('复制失败，请手动复制'))
+                }
+              }}
+            >
+              {copiedMerchantCurl ? (
+                <Check className='size-3 text-emerald-500' />
+              ) : (
+                <Copy className='size-3' />
+              )}
+              {copiedMerchantCurl ? t('已复制') : t('复制调价 cURL')}
+            </Button>
+          </div>
+          <div className='space-y-1 font-mono text-[11px]'>
+            <div>GET /api/merchant/portal/bidding — {t('查询实时市场最低价、自身排名与实测 TTFT/TPS')}</div>
+            <div>
+              PUT /api/merchant/portal/quotes — {t('按 (channel_id, model_name) 实时批量推送报价')}
+              <span className='text-muted-foreground block'>
+                {'{"items":[{"channel_id":1,"pool_group":"...","model_name":"gpt-4o","input_price":1.5,"output_price":6.0}]}'}
+              </span>
+            </div>
+            <div>PUT /api/merchant/portal/rate — {t('实时调整分组倍率与是否加入 Auto 路由池')}</div>
+          </div>
+          <div className='text-muted-foreground leading-relaxed'>
+            {t('生效优先级：商家实时出价 (merchant) / 上游同步 (auto) / 人工锁定 (manual) 会在请求选中本渠道时直接按实际成交价结算，并在买家响应头 X-Relay-Provider 与日志中透明展示。')}
+          </div>
+        </div>
+      )}
+
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Auto-synced quotes follow your upstream on a schedule; derived quotes follow your rate; manual quotes are locked by admins.'
+          '点击「改价」可对单模型实时竞价（0.001~10000 USD/1M），改价与分组倍率调整无需人工审核并即时进入 Order-Book 路由排序。'
         )}
       </p>
 
-      <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1fr_0.9fr_1.2fr_0.8fr_0.8fr_0.7fr_1fr_1fr_1fr] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Channel')}</span>
-          <span>{t('Pool')}</span>
-          <span>{t('Model')}</span>
-          <span>{t('Channel Rate')}</span>
-          <span>{t('Effective Rate')}</span>
-          <span>{t('Source')}</span>
-          <span>{t('Input $/1M')}</span>
-          <span>{t('Output $/1M')}</span>
-          <span className='text-right'>{t('Updated')}</span>
-        </div>
-        <div className='divide-y'>
-          {filtered.map((q) => (
-            <div
-              key={q.id}
-              title={`${t('Last updated')}: ${formatTimestampToDate(q.updated_at)}`}
-              className='grid grid-cols-[1fr_0.9fr_1.2fr_0.8fr_0.8fr_0.7fr_1fr_1fr_1fr] items-center gap-2 px-3 py-2 text-sm'
-            >
-              <span className='truncate'>
-                {q.channel_name || `#${q.channel_id}`}
-              </span>
-              <span className='truncate font-mono'>{q.pool_group}</span>
-              <span className='truncate font-mono'>{q.model_name}</span>
-              <span className='font-mono'>
-                {formatRate(q.channel_rate_multiplier)}
-              </span>
-              <span className='font-mono'>{formatRate(q.rate_multiplier)}</span>
-              <span>{sourceBadge(q.source)}</span>
-              <span className='font-mono'>{q.input_price.toFixed(6)}</span>
-              <span className='font-mono'>{q.output_price.toFixed(6)}</span>
-              <span className='text-muted-foreground text-right text-xs'>
-                {q.updated_at
-                  ? formatTimestampToDate(q.updated_at)
-                  : '--'}
-              </span>
-            </div>
-          ))}
-          {!filtered.length && (
-            <div className='text-muted-foreground px-3 py-8 text-center'>
-              {t('No quotes yet')}
-            </div>
-          )}
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[960px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[0.9fr_0.8fr_1.1fr_0.6fr_0.8fr_0.8fr_1fr_0.8fr_0.6fr] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Channel')}</span>
+            <span>{t('Pool')}</span>
+            <span>{t('Model')}</span>
+            <span>{t('Source')}</span>
+            <span>{t('Input $/1M')}</span>
+            <span>{t('Output $/1M')}</span>
+            <span>{t('TTFT / TPS')}</span>
+            <span>{t('市场排名 / 最低')}</span>
+            <span className='text-right'>{t('Action')}</span>
+          </div>
+          <div className='divide-y'>
+            {filtered.map((q) => {
+              const bid = biddingByKey.get(`${q.channel_id}|${q.pool_group}|${q.model_name}`)
+              const ttft = bid?.my_ttft_ms ?? q.ttft_ema_ms ?? 0
+              const tps = bid?.my_tps ?? q.tps_ema ?? 0
+              const samples = bid?.sample_count ?? q.sample_count ?? 0
+              return (
+                <div
+                  key={q.id}
+                  title={`${t('Last updated')}: ${formatTimestampToDate(q.updated_at)}`}
+                  className='hover:bg-muted/35 grid grid-cols-[0.9fr_0.8fr_1.1fr_0.6fr_0.8fr_0.8fr_1fr_0.8fr_0.6fr] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+                >
+                  <span className='truncate font-medium'>
+                    {q.channel_name || `#${q.channel_id}`}
+                  </span>
+                  <span className='truncate font-mono'>{q.pool_group}</span>
+                  <span className='truncate font-mono'>{q.model_name}</span>
+                  <span>{sourceBadge(q.source)}</span>
+                  <span className='font-mono tabular-nums'>
+                    {q.input_price.toFixed(4)}
+                  </span>
+                  <span className='font-mono tabular-nums'>
+                    {q.output_price.toFixed(4)}
+                  </span>
+                  <span className='text-muted-foreground font-mono text-xs tabular-nums'>
+                    {samples > 0
+                      ? `${Math.round(ttft)}ms / ${tps > 0 ? `${tps.toFixed(1)}` : '--'}`
+                      : t('冷启动')}
+                  </span>
+                  <span className='font-mono text-xs tabular-nums'>
+                    {bid
+                      ? `#${bid.my_price_ttft_rank}/${bid.competitor_count} ($${bid.market_min_price.toFixed(3)})`
+                      : '--'}
+                  </span>
+                  <span className='text-right'>
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      onClick={() => openEditQuote(q)}
+                    >
+                      <PencilLine className='mr-1 size-3.5' />
+                      {t('改价')}
+                    </Button>
+                  </span>
+                </div>
+              )
+            })}
+            {!filtered.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <FileSpreadsheet className='text-muted-foreground/50 size-7' />
+                <span>{t('No quotes yet')}</span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      <Dialog
+        open={Boolean(editingQuote)}
+        onOpenChange={(open) => {
+          if (!open) setEditingQuote(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('实时调整模型报价')}</DialogTitle>
+            <DialogDescription>
+              {editingQuote
+                ? `${editingQuote.channel_name || `#${editingQuote.channel_id}`} · ${editingQuote.pool_group} · ${editingQuote.model_name}`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className='space-y-4'>
+            <div className='space-y-1.5'>
+              <Label htmlFor='merchant-bid-input'>{t('输入单价 (USD / 1M tokens)')}</Label>
+              <Input
+                id='merchant-bid-input'
+                type='number'
+                step='0.001'
+                min='0.001'
+                max='10000'
+                value={bidInputPrice}
+                onChange={(e) => setBidInputPrice(e.target.value)}
+              />
+            </div>
+            <div className='space-y-1.5'>
+              <Label htmlFor='merchant-bid-output'>{t('输出单价 (USD / 1M tokens)')}</Label>
+              <Input
+                id='merchant-bid-output'
+                type='number'
+                step='0.001'
+                min='0.001'
+                max='10000'
+                value={bidOutputPrice}
+                onChange={(e) => setBidOutputPrice(e.target.value)}
+              />
+            </div>
+            <div className='flex items-center justify-between gap-2 pt-2'>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={bidSaving}
+                onClick={() => void submitQuoteBid(true)}
+              >
+                {t('恢复分组派生价')}
+              </Button>
+              <Button
+                type='button'
+                disabled={bidSaving}
+                onClick={() => void submitQuoteBid(false)}
+              >
+                {t('保存并立即生效')}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -1566,35 +2065,57 @@ function MerchantEarningsTab() {
   return (
     <div className='space-y-3'>
       {/* 汇总卡片 */}
-      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>{t('Today')}</p>
-            <p className='text-2xl font-bold'>{formatUsd(summary?.today)}</p>
+      <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
+        <Card className='border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-xs font-medium'>
+              {t('Today')}
+            </CardTitle>
+            <TrendingUp className='size-4 text-emerald-500' />
+          </CardHeader>
+          <CardContent>
+            <p className='text-2xl font-bold tabular-nums'>
+              {formatUsd(summary?.today)}
+            </p>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>
+        <Card className='border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-xs font-medium'>
               {t('Last 7 days')}
+            </CardTitle>
+            <Activity className='size-4 text-sky-500' />
+          </CardHeader>
+          <CardContent>
+            <p className='text-2xl font-bold tabular-nums'>
+              {formatUsd(summary?.last_7d)}
             </p>
-            <p className='text-2xl font-bold'>{formatUsd(summary?.last_7d)}</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>
+        <Card className='border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-xs font-medium'>
               {t('Last 30 days')}
+            </CardTitle>
+            <BarChart3 className='size-4 text-violet-500' />
+          </CardHeader>
+          <CardContent>
+            <p className='text-2xl font-bold tabular-nums'>
+              {formatUsd(summary?.last_30d)}
             </p>
-            <p className='text-2xl font-bold'>{formatUsd(summary?.last_30d)}</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className='py-4'>
-            <p className='text-muted-foreground text-xs'>
+        <Card className='border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-xs font-medium'>
               {t('Total earnings')}
+            </CardTitle>
+            <Wallet className='size-4 text-amber-500' />
+          </CardHeader>
+          <CardContent>
+            <p className='text-2xl font-bold tabular-nums'>
+              {formatUsd(summary?.total)}
             </p>
-            <p className='text-2xl font-bold'>{formatUsd(summary?.total)}</p>
           </CardContent>
         </Card>
       </div>
@@ -1675,41 +2196,44 @@ function MerchantEarningsTab() {
         </span>
       </div>
 
-      <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1.2fr_1.4fr_0.8fr_1fr] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Time')}</span>
-          <span>{t('Model')}</span>
-          <span>{t('Channel')}</span>
-          <span className='text-right'>{t('Amount (USD)')}</span>
-        </div>
-        <div className='divide-y'>
-          {items.map((e) => (
-            <div
-              key={e.id}
-              className='grid grid-cols-[1.2fr_1.4fr_0.8fr_1fr] items-center gap-2 px-3 py-2 text-sm'
-            >
-              <span className='text-muted-foreground'>
-                {formatTimestampToDate(e.created_at)}
-              </span>
-              <span className='truncate font-mono'>{e.model_name}</span>
-              <span className='font-mono'>#{e.channel_id}</span>
-              <span className='text-right font-mono'>
-                +
-                {formatCurrencyFromUSD(e.amount, {
-                  digitsLarge: 6,
-                  digitsSmall: 6,
-                })}
-              </span>
-            </div>
-          ))}
-          {!items.length && (
-            <div className='text-muted-foreground px-3 py-8 text-center'>
-              {t('No earnings yet')}
-            </div>
-          )}
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[520px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1.2fr_1.4fr_0.8fr_1fr] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Time')}</span>
+            <span>{t('Model')}</span>
+            <span>{t('Channel')}</span>
+            <span className='text-right'>{t('Amount (USD)')}</span>
+          </div>
+          <div className='divide-y'>
+            {items.map((e) => (
+              <div
+                key={e.id}
+                className='hover:bg-muted/35 grid grid-cols-[1.2fr_1.4fr_0.8fr_1fr] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+              >
+                <span className='text-muted-foreground tabular-nums'>
+                  {formatTimestampToDate(e.created_at)}
+                </span>
+                <span className='truncate font-mono'>{e.model_name}</span>
+                <span className='font-mono'>#{e.channel_id}</span>
+                <span className='text-right font-mono font-medium text-emerald-600 tabular-nums dark:text-emerald-400'>
+                  +
+                  {formatCurrencyFromUSD(e.amount, {
+                    digitsLarge: 6,
+                    digitsSmall: 6,
+                  })}
+                </span>
+              </div>
+            ))}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <BarChart3 className='text-muted-foreground/50 size-7' />
+                <span>{t('No earnings yet')}</span>
+              </div>
+            )}
+          </div>
         </div>
         {items.length > 0 && (
-          <div className='text-muted-foreground flex items-center justify-between gap-2 border-t px-3 py-2 text-xs'>
+          <div className='bg-muted/20 text-muted-foreground flex items-center justify-between gap-2 border-t px-4 py-2.5 text-xs'>
             <span>
               {t('Page total')}:{' '}
               <span className='text-foreground font-mono'>
@@ -1829,36 +2353,68 @@ function MerchantWithdrawalsTab({
   }
 
   return (
-    <div>
-      <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
-        <p className='text-muted-foreground text-sm'>
-          {t('Available balance')}: {formatUsd(balance)}
-          {(wallet?.pending_balance ?? 0) > 0
-            ? ` · ${t('T+N pending')}: ${formatUsd(wallet?.pending_balance)}`
-            : ''}
-          {(wallet?.frozen_balance ?? 0) > 0
-            ? ` · ${t('Frozen')}: ${formatUsd(wallet?.frozen_balance)}`
-            : ''}
-          {(profile?.min_withdraw ?? 0) > 0
-            ? ` · ${t('Min withdraw')}: ${formatUsd(profile?.min_withdraw)}`
-            : ''}
-        </p>
-        <Button onClick={openWithdrawDialog}>{t('Request Withdrawal')}</Button>
-      </div>
-      <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1.2fr_0.9fr_1.4fr_1.1fr_1.3fr] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Time / Trade No')}</span>
-          <span>{t('Amount (USD)')}</span>
-          <span>{t('Account / QR')}</span>
-          <span>{t('Status')}</span>
-          <span>{t('Review / Payment Proof')}</span>
-        </div>
-        <div className='divide-y'>
-          {items.map((w) => (
-            <div
-              key={w.id}
-              className='grid grid-cols-[1.2fr_0.9fr_1.4fr_1.1fr_1.3fr] items-center gap-2 px-3 py-2.5 text-sm'
-            >
+    <div className='space-y-4'>
+      <Card className='border-amber-500/20 bg-gradient-to-r from-amber-500/5 via-transparent to-transparent'>
+        <CardContent className='flex flex-wrap items-center justify-between gap-3 py-4'>
+          <div className='flex flex-wrap items-center gap-4 text-sm'>
+            <div>
+              <p className='text-muted-foreground text-xs'>
+                {t('Available balance')}
+              </p>
+              <p className='font-mono text-xl font-bold tabular-nums'>
+                {formatUsd(balance)}
+              </p>
+            </div>
+            {(wallet?.pending_balance ?? 0) > 0 && (
+              <div className='border-l pl-4'>
+                <p className='text-muted-foreground text-xs'>
+                  {t('T+N pending')}
+                </p>
+                <p className='font-mono text-sm font-medium tabular-nums'>
+                  {formatUsd(wallet?.pending_balance)}
+                </p>
+              </div>
+            )}
+            {(wallet?.frozen_balance ?? 0) > 0 && (
+              <div className='border-l pl-4'>
+                <p className='text-muted-foreground text-xs'>{t('Frozen')}</p>
+                <p className='font-mono text-sm font-medium tabular-nums'>
+                  {formatUsd(wallet?.frozen_balance)}
+                </p>
+              </div>
+            )}
+            {(profile?.min_withdraw ?? 0) > 0 && (
+              <div className='border-l pl-4'>
+                <p className='text-muted-foreground text-xs'>
+                  {t('Min withdraw')}
+                </p>
+                <p className='font-mono text-sm font-medium tabular-nums'>
+                  {formatUsd(profile?.min_withdraw)}
+                </p>
+              </div>
+            )}
+          </div>
+          <Button onClick={openWithdrawDialog}>
+            <Wallet className='mr-1.5 size-4' />
+            {t('Request Withdrawal')}
+          </Button>
+        </CardContent>
+      </Card>
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[680px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1.2fr_0.9fr_1.4fr_1.1fr_1.3fr] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Time / Trade No')}</span>
+            <span>{t('Amount (USD)')}</span>
+            <span>{t('Account / QR')}</span>
+            <span>{t('Status')}</span>
+            <span>{t('Review / Payment Proof')}</span>
+          </div>
+          <div className='divide-y'>
+            {items.map((w) => (
+              <div
+                key={w.id}
+                className='hover:bg-muted/35 grid grid-cols-[1.2fr_0.9fr_1.4fr_1.1fr_1.3fr] items-center gap-2 px-4 py-3 text-sm transition-colors'
+              >
               <div className='min-w-0'>
                 <span className='text-muted-foreground block text-xs'>
                   {formatTimestampToDate(w.created_at)}
@@ -1906,11 +2462,13 @@ function MerchantWithdrawalsTab({
               </div>
             </div>
           ))}
-          {!items.length && (
-            <div className='text-muted-foreground px-3 py-8 text-center'>
-              {t('No withdrawals yet')}
-            </div>
-          )}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <ReceiptText className='text-muted-foreground/50 size-7' />
+                <span>{t('No withdrawals yet')}</span>
+              </div>
+            )}
+          </div>
         </div>
         {(withdrawalsQuery.data?.total ?? 0) > page * 20 && (
           <div className='border-t p-2 text-center'>
@@ -2237,57 +2795,60 @@ function MerchantLogsTab({ groups }: { groups: string[] }) {
         </span>
       </div>
 
-      <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1.1fr_1fr_1.4fr_1fr_1fr_0.8fr_0.8fr_1fr] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Time')}</span>
-          <span>{t('Pool')}</span>
-          <span>{t('Model')}</span>
-          <span>{t('Channel')}</span>
-          <span>{t('Tokens')}</span>
-          <span>{t('Latency')}</span>
-          <span>{t('Result')}</span>
-          <span className='text-right'>{t('Amount (USD)')}</span>
-        </div>
-        <div className='divide-y'>
-          {items.map((log) => (
-            <div
-              key={log.id}
-              className='grid grid-cols-[1.1fr_1fr_1.4fr_1fr_1fr_0.8fr_0.8fr_1fr] items-center gap-2 px-3 py-2 text-sm'
-            >
-              <span className='text-muted-foreground'>
-                {formatTimestampToDate(log.created_at)}
-              </span>
-              <span className='truncate font-mono'>
-                {log.group || t('Default')}
-              </span>
-              <span className='truncate font-mono'>{log.model_name}</span>
-              <span className='truncate'>
-                {log.channel_name || `#${log.channel}`}
-              </span>
-              <span className='font-mono'>
-                {log.prompt_tokens}/{log.completion_tokens}
-              </span>
-              <span className='font-mono'>{log.use_time}s</span>
-              <span>
-                {log.type === 5 ? (
-                  <Badge variant='destructive'>{t('Failed')}</Badge>
-                ) : (
-                  <Badge variant='secondary'>{t('Success')}</Badge>
-                )}
-              </span>
-              <span className='text-right font-mono'>
-                {formatQuotaWithCurrency(log.quota, {
-                  digitsLarge: 4,
-                  digitsSmall: 6,
-                })}
-              </span>
-            </div>
-          ))}
-          {!items.length && (
-            <div className='text-muted-foreground px-3 py-8 text-center'>
-              {t('No usage records yet')}
-            </div>
-          )}
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[780px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1.1fr_1fr_1.4fr_1fr_1fr_0.8fr_0.8fr_1fr] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Time')}</span>
+            <span>{t('Pool')}</span>
+            <span>{t('Model')}</span>
+            <span>{t('Channel')}</span>
+            <span>{t('Tokens')}</span>
+            <span>{t('Latency')}</span>
+            <span>{t('Result')}</span>
+            <span className='text-right'>{t('Amount (USD)')}</span>
+          </div>
+          <div className='divide-y'>
+            {items.map((log) => (
+              <div
+                key={log.id}
+                className='hover:bg-muted/35 grid grid-cols-[1.1fr_1fr_1.4fr_1fr_1fr_0.8fr_0.8fr_1fr] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+              >
+                <span className='text-muted-foreground tabular-nums'>
+                  {formatTimestampToDate(log.created_at)}
+                </span>
+                <span className='truncate font-mono'>
+                  {log.group || t('Default')}
+                </span>
+                <span className='truncate font-mono'>{log.model_name}</span>
+                <span className='truncate'>
+                  {log.channel_name || `#${log.channel}`}
+                </span>
+                <span className='font-mono tabular-nums'>
+                  {log.prompt_tokens}/{log.completion_tokens}
+                </span>
+                <span className='font-mono tabular-nums'>{log.use_time}s</span>
+                <span>
+                  {log.type === 5 ? (
+                    <Badge variant='destructive'>{t('Failed')}</Badge>
+                  ) : (
+                    <Badge variant='secondary'>{t('Success')}</Badge>
+                  )}
+                </span>
+                <span className='text-right font-mono tabular-nums'>
+                  {formatQuotaWithCurrency(log.quota, {
+                    digitsLarge: 4,
+                    digitsSmall: 6,
+                  })}
+                </span>
+              </div>
+            ))}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <Activity className='text-muted-foreground/50 size-7' />
+                <span>{t('No usage records yet')}</span>
+              </div>
+            )}
+          </div>
         </div>
         {items.length > 0 && (
           <div className='flex items-center justify-end gap-2 border-t px-3 py-2 text-xs'>

@@ -46,6 +46,44 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 		clamp.Op, clamp.Kind, clamp.Original, clamp.Clamped, relayInfo.UserId, relayInfo.GetBillingModelName()))
 }
 
+func appendSelectedOrderBookMeta(ctx *gin.Context, other *model.LogOther) {
+	if ctx == nil || other == nil {
+		return
+	}
+	if name := common.GetContextKeyString(ctx, constant.ContextKeySelectedMerchantName); name != "" {
+		other.SetPublic("merchant_name", name)
+	}
+	if code := common.GetContextKeyString(ctx, constant.ContextKeySelectedMerchantCode); code != "" {
+		other.SetPublic("merchant_code", code)
+	}
+	if midRaw, ok := common.GetContextKey(ctx, constant.ContextKeySelectedMerchantId); ok {
+		if mid, ok := midRaw.(int); ok {
+			other.SetPublic("merchant_id", mid)
+		}
+	}
+	if strategy := common.GetContextKeyString(ctx, constant.ContextKeySelectedRoutingStrategy); strategy != "" {
+		other.SetPublic("routing_strategy", strategy)
+	}
+	if source := common.GetContextKeyString(ctx, constant.ContextKeySelectedQuoteSource); source != "" {
+		other.SetPublic("quote_source", source)
+	}
+	if inRaw, ok := common.GetContextKey(ctx, constant.ContextKeySelectedQuoteInputPrice); ok {
+		if inPrice, ok := inRaw.(float64); ok && inPrice >= 0 {
+			other.SetPublic("quote_input_price", inPrice)
+		}
+	}
+	if outRaw, ok := common.GetContextKey(ctx, constant.ContextKeySelectedQuoteOutputPrice); ok {
+		if outPrice, ok := outRaw.(float64); ok && outPrice >= 0 {
+			other.SetPublic("quote_output_price", outPrice)
+		}
+	}
+	if tpsRaw, ok := common.GetContextKey(ctx, constant.ContextKeySelectedStreamTps); ok {
+		if tps, ok := tpsRaw.(float64); ok && tps > 0 {
+			other.SetPublic("stream_tps", tps)
+		}
+	}
+}
+
 func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if other == nil {
 		return
@@ -130,6 +168,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 
 	AppendRelayLogAdminInfo(ctx, relayInfo, other)
 	AppendResponseModelLogInfo(relayInfo, other)
+	appendSelectedOrderBookMeta(ctx, other)
 	appendRequestPath(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)
 	appendFinalRequestFormat(relayInfo, other)

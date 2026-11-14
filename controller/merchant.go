@@ -61,8 +61,11 @@ type merchantCustomPrice struct {
 // merchantChannelModelLimit 审核通过时写入渠道的模型数上限（探测清单可能很长）。
 const merchantChannelModelLimit = 200
 
-// merchantRateMultiplierLimit 分组倍率上限。
-const merchantRateMultiplierLimit = 100.0
+// merchantRateMultiplierLimit 分组倍率上限 / 下限（无需审核即时改价的平台安全风控边界）。
+const (
+	merchantRateMultiplierFloor = 0.01
+	merchantRateMultiplierLimit = 100.0
+)
 
 // merchantCustomPriceMax 自定义模型基准单价上限（美元/1M tokens）。
 const merchantCustomPriceMax = 10000.0
@@ -1696,7 +1699,7 @@ func normalizeRateMultiplier(v float64) float64 {
 	return v
 }
 
-// GetMerchantPortalQuotes 商家门户盘口列表（自己渠道的派生盘口）。
+// GetMerchantPortalQuotes 商家门户盘口列表（自己渠道的盘口与实时首字/吞吐遥测）。
 // 每条记录同时带出该渠道的倍率与有效倍率，便于商家理解"自己挂了多少"。
 func GetMerchantPortalQuotes(c *gin.Context) {
 	profile, ok := requireActiveMerchant(c)
@@ -1729,6 +1732,10 @@ func GetMerchantPortalQuotes(c *gin.Context) {
 		ChannelName       string  `json:"channel_name"`
 		ChannelRate       float64 `json:"channel_rate_multiplier"`
 		PlatformModelRate float64 `json:"platform_model_ratio"`
+		TtftEmaMs         float64 `json:"ttft_ema_ms"`
+		TpsEma            float64 `json:"tps_ema"`
+		SuccessEma        float64 `json:"success_ema"`
+		SampleCount       int     `json:"sample_count"`
 	}
 	channelById := make(map[int]model.Channel, len(channels))
 	for _, ch := range channels {
@@ -1742,17 +1749,25 @@ func GetMerchantPortalQuotes(c *gin.Context) {
 			groupRatio = 1.0
 		}
 		platformRatio := q.RateMultiplier / groupRatio
-		items = append(items, portalQuote{
+		item := portalQuote{
 			ChannelQuote:      q,
 			ChannelName:       ch.Name,
 			ChannelRate:       groupRatio,
 			PlatformModelRate: platformRatio,
-		})
+			SuccessEma:        1.0,
+		}
+		if snap, ok := model.GetChannelLiveMetric(q.ChannelId, q.ModelName); ok {
+			item.TtftEmaMs = snap.TtftEmaMs
+			item.TpsEma = snap.TpsEma
+			item.SuccessEma = snap.SuccessEma
+			item.SampleCount = snap.SampleCount
+		}
+		items = append(items, item)
 	}
 	common.ApiSuccess(c, items)
 }
 
-// UpdateMerchantPortalRate 商家提交专属分组倍率 / 描述 / Auto 自动路由变更申请（需管理员审核）。
+// UpdateMerchantPortalRate 商家实时调整专属分组倍率 / 描述 / Auto 自动路由接入（无需人工审核，立即生效）。
 func UpdateMerchantPortalRate(c *gin.Context) {
 	profile, ok := requireActiveMerchant(c)
 	if !ok {
@@ -1769,8 +1784,9 @@ func UpdateMerchantPortalRate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
-	if req.RateMultiplier <= 0 || req.RateMultiplier > merchantRateMultiplierLimit {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率需在 0（不含）到 100 之间"})
+	if math.IsNaN(req.RateMultiplier) || math.IsInf(req.RateMultiplier, 0) ||
+		req.RateMultiplier < merchantRateMultiplierFloor || req.RateMultiplier > merchantRateMultiplierLimit {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率需在 0.01 到 100 之间"})
 		return
 	}
 	groupName := strings.TrimSpace(req.GroupName)
@@ -1808,38 +1824,455 @@ func UpdateMerchantPortalRate(c *gin.Context) {
 		groupDesc = strings.TrimSpace(setting.GetUserUsableGroupsCopy()[groupName])
 	}
 
-	app := &model.MerchantApplication{
-		UserId:         profile.UserId,
-		AppType:        model.MerchantAppTypeGroupChange,
-		SiteName:       profile.SiteName,
-		SiteUrl:        profile.SiteUrl,
-		SiteKey:        "",
-		Models:         "[]",
-		GroupName:      groupName,
-		GroupDesc:      groupDesc,
-		JoinAutoGroup:  joinAuto,
-		RateMultiplier: req.RateMultiplier,
-		Status:         model.MerchantApplicationPending,
-		CreatedAt:      time.Now().Unix(),
-	}
-	if err := createPendingMerchantApplication(app); err != nil {
-		if errors.Is(err, errMerchantApplicationPending) {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
-			return
+	var affectedChannelIds []int
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		q := model.ApplyChannelGroupFilter(tx.Model(&model.Channel{}), groupName).
+			Where("merchant_id = ?", profile.UserId)
+		if req.ChannelId > 0 {
+			q = q.Where("id = ?", req.ChannelId)
 		}
-		if errors.Is(err, gorm.ErrDuplicatedKey) || hasPendingMerchantApplication(profile.UserId) {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
-			return
+		if err := q.Pluck("id", &affectedChannelIds).Error; err != nil {
+			return err
 		}
+		if len(affectedChannelIds) > 0 {
+			if err := tx.Model(&model.Channel{}).Where("id IN ?", affectedChannelIds).
+				Update("rate_multiplier", req.RateMultiplier).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	if err := syncMerchantGroupToNativeSettings(groupName, groupDesc, req.RateMultiplier, joinAuto, profile.SiteName); err != nil {
+		common.ApiError(c, fmt.Errorf("同步分组配置失败: %w", err))
+		return
+	}
+	for _, chId := range affectedChannelIds {
+		if err := model.RebuildChannelQuotes(chId); err != nil {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("rebuild quotes for channel %d failed: %v", chId, err))
+		}
+	}
+	model.InitChannelCache()
 	common.ApiSuccess(c, gin.H{
-		"pending_review":  true,
-		"application_id":  app.Id,
-		"group_name":      app.GroupName,
-		"rate_multiplier": app.RateMultiplier,
-		"join_auto_group": app.JoinAutoGroup,
+		"pending_review":    false,
+		"applied":           true,
+		"group_name":        groupName,
+		"group_desc":        groupDesc,
+		"rate_multiplier":   req.RateMultiplier,
+		"join_auto_group":   joinAuto,
+		"affected_channels": len(affectedChannelIds),
+	})
+}
+
+type merchantQuoteBidInput struct {
+	ChannelId      int      `json:"channel_id"`
+	PoolGroup      string   `json:"pool_group"`
+	ModelName      string   `json:"model_name"`
+	InputPrice     *float64 `json:"input_price"`
+	OutputPrice    *float64 `json:"output_price"`
+	RateMultiplier *float64 `json:"rate_multiplier"`
+	ResetToDerived bool     `json:"reset_to_derived"`
+}
+
+func resolveMerchantBidTargetGroup(channel *model.Channel, requested string) (string, error) {
+	pool := strings.TrimSpace(requested)
+	groups := splitModelList(channel.Group)
+	if pool == "" {
+		for _, g := range groups {
+			if !isSystemReservedGroup(g) {
+				pool = g
+				break
+			}
+		}
+		if pool == "" && len(groups) > 0 {
+			pool = groups[0]
+		}
+	}
+	if pool == "" {
+		return "", errors.New("渠道未绑定可用分组")
+	}
+	if !slices.Contains(groups, pool) {
+		return "", fmt.Errorf("渠道未加入分组 %s", pool)
+	}
+	return pool, nil
+}
+
+func buildMerchantBidQuote(channel *model.Channel, poolGroup string, item merchantQuoteBidInput) (*model.ChannelQuote, error) {
+	modelName := strings.TrimSpace(item.ModelName)
+	if modelName == "" {
+		return nil, errors.New("model_name 不能为空")
+	}
+	modelsList := splitModelList(channel.Models)
+	if !slices.Contains(modelsList, modelName) {
+		return nil, fmt.Errorf("渠道 #%d 未上架模型 %s", channel.Id, modelName)
+	}
+
+	completionRatio := ratio_setting.GetCompletionRatio(modelName)
+	if completionRatio <= 0 {
+		completionRatio = 1.0
+	}
+
+	var effMultiplier, inputPrice, outputPrice float64
+	if item.InputPrice != nil {
+		inputPrice = *item.InputPrice
+		if math.IsNaN(inputPrice) || math.IsInf(inputPrice, 0) ||
+			inputPrice < 0.001 || inputPrice > merchantCustomPriceMax {
+			return nil, fmt.Errorf("模型 %s 的输入单价需在 0.001 ~ %.0f USD/1M 之间", modelName, merchantCustomPriceMax)
+		}
+		if item.OutputPrice != nil {
+			outputPrice = *item.OutputPrice
+		} else {
+			outputPrice = inputPrice * completionRatio
+		}
+		if math.IsNaN(outputPrice) || math.IsInf(outputPrice, 0) ||
+			outputPrice < 0.001 || outputPrice > merchantCustomPriceMax {
+			return nil, fmt.Errorf("模型 %s 的输出单价需在 0.001 ~ %.0f USD/1M 之间", modelName, merchantCustomPriceMax)
+		}
+		effMultiplier = inputPrice / model.QuoteRatioBase
+	} else if item.RateMultiplier != nil {
+		effMultiplier = *item.RateMultiplier
+		if math.IsNaN(effMultiplier) || math.IsInf(effMultiplier, 0) ||
+			effMultiplier < merchantRateMultiplierFloor || effMultiplier > merchantRateMultiplierLimit {
+			return nil, fmt.Errorf("模型 %s 的有效倍率需在 0.01 ~ %.0f 之间", modelName, merchantRateMultiplierLimit)
+		}
+		inputPrice = effMultiplier * model.QuoteRatioBase
+		if item.OutputPrice != nil {
+			outputPrice = *item.OutputPrice
+			if math.IsNaN(outputPrice) || math.IsInf(outputPrice, 0) ||
+				outputPrice < 0.001 || outputPrice > merchantCustomPriceMax {
+				return nil, fmt.Errorf("模型 %s 的输出单价需在 0.001 ~ %.0f USD/1M 之间", modelName, merchantCustomPriceMax)
+			}
+		} else {
+			outputPrice = effMultiplier * completionRatio * model.QuoteRatioBase
+		}
+	} else {
+		return nil, fmt.Errorf("请为模型 %s 指定 input_price 或 rate_multiplier", modelName)
+	}
+
+	return &model.ChannelQuote{
+		ChannelId:      channel.Id,
+		PoolGroup:      poolGroup,
+		ModelName:      modelName,
+		RateMultiplier: effMultiplier,
+		InputPrice:     inputPrice,
+		OutputPrice:    outputPrice,
+		Currency:       "USD",
+		Source:         model.QuoteSourceMerchant,
+		Status:         model.QuoteStatusEnabled,
+	}, nil
+}
+
+// UpdateMerchantPortalQuotes 商家按 (channel_id, pool_group, model_name) 实时出价或恢复派生价，
+// 支持单条和批量推送，无需审核即时进入 Order-Book 竞价排序。
+func UpdateMerchantPortalQuotes(c *gin.Context) {
+	profile, ok := requireActiveMerchant(c)
+	if !ok {
+		return
+	}
+	var raw struct {
+		ChannelId      int                     `json:"channel_id"`
+		PoolGroup      string                  `json:"pool_group"`
+		ModelName      string                  `json:"model_name"`
+		InputPrice     *float64                `json:"input_price"`
+		OutputPrice    *float64                `json:"output_price"`
+		RateMultiplier *float64                `json:"rate_multiplier"`
+		ResetToDerived bool                    `json:"reset_to_derived"`
+		Items          []merchantQuoteBidInput `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&raw); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
+		return
+	}
+	items := raw.Items
+	if len(items) == 0 && strings.TrimSpace(raw.ModelName) != "" {
+		items = []merchantQuoteBidInput{{
+			ChannelId:      raw.ChannelId,
+			PoolGroup:      raw.PoolGroup,
+			ModelName:      raw.ModelName,
+			InputPrice:     raw.InputPrice,
+			OutputPrice:    raw.OutputPrice,
+			RateMultiplier: raw.RateMultiplier,
+			ResetToDerived: raw.ResetToDerived,
+		}}
+	}
+	if len(items) == 0 || len(items) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "请提供 1~100 条模型报价"})
+		return
+	}
+
+	channelCache := make(map[int]*model.Channel)
+	quotesToUpsert := make([]model.ChannelQuote, 0, len(items))
+	resetKeys := make([]struct {
+		channelId int
+		pool      string
+		modelName string
+	}, 0)
+	resetChannelIds := make(map[int]struct{})
+
+	for _, item := range items {
+		cid := item.ChannelId
+		if cid <= 0 {
+			cid = raw.ChannelId
+		}
+		ch, cached := channelCache[cid]
+		if !cached {
+			owned, ok := merchantOwnedChannel(c, profile, cid)
+			if !ok {
+				return
+			}
+			ch = owned
+			channelCache[cid] = ch
+		}
+		poolReq := item.PoolGroup
+		if strings.TrimSpace(poolReq) == "" {
+			poolReq = raw.PoolGroup
+		}
+		poolGroup, err := resolveMerchantBidTargetGroup(ch, poolReq)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		if item.ResetToDerived {
+			modelName := strings.TrimSpace(item.ModelName)
+			if modelName == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "model_name 不能为空"})
+				return
+			}
+			resetKeys = append(resetKeys, struct {
+				channelId int
+				pool      string
+				modelName string
+			}{channelId: ch.Id, pool: poolGroup, modelName: modelName})
+			resetChannelIds[ch.Id] = struct{}{}
+			continue
+		}
+		quote, err := buildMerchantBidQuote(ch, poolGroup, item)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		quotesToUpsert = append(quotesToUpsert, *quote)
+	}
+
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		for _, rk := range resetKeys {
+			if err := tx.Where("channel_id = ? AND pool_group = ? AND model_name = ? AND source = ?",
+				rk.channelId, rk.pool, rk.modelName, model.QuoteSourceMerchant).
+				Delete(&model.ChannelQuote{}).Error; err != nil {
+				return err
+			}
+		}
+		for cid := range resetChannelIds {
+			if ch := channelCache[cid]; ch != nil {
+				if err := model.RebuildChannelQuotesWithTx(tx, ch); err != nil {
+					return err
+				}
+			}
+		}
+		if len(quotesToUpsert) > 0 {
+			if err := model.UpsertChannelQuotesWithTx(tx, quotesToUpsert); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	model.InitChannelCache()
+	common.ApiSuccess(c, gin.H{
+		"pending_review": false,
+		"applied":        true,
+		"updated_count":  len(quotesToUpsert),
+		"reset_count":    len(resetKeys),
+		"items":          quotesToUpsert,
+	})
+}
+
+// GetMerchantPortalBidding 返回商家在全平台 Order-Book 上的实时竞价位置、市场最低价与实测 TTFT/TPS 对比。
+func GetMerchantPortalBidding(c *gin.Context) {
+	profile, ok := requireActiveMerchant(c)
+	if !ok {
+		return
+	}
+	channelIds, err := model.GetMerchantChannelIds(profile.UserId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	type biddingEntry struct {
+		ChannelId         int     `json:"channel_id"`
+		ChannelName       string  `json:"channel_name"`
+		PoolGroup         string  `json:"pool_group"`
+		ModelName         string  `json:"model_name"`
+		MyInputPrice      float64 `json:"my_input_price"`
+		MyOutputPrice     float64 `json:"my_output_price"`
+		MyBlendedPrice    float64 `json:"my_blended_price"`
+		QuoteSource       string  `json:"quote_source"`
+		MyTtftMs          float64 `json:"my_ttft_ms"`
+		MyTps             float64 `json:"my_tps"`
+		MySuccessRate     float64 `json:"my_success_rate"`
+		SampleCount       int     `json:"sample_count"`
+		MarketMinPrice    float64 `json:"market_min_price"`
+		MarketBestTtftMs  float64 `json:"market_best_ttft_ms"`
+		CompetitorCount   int     `json:"competitor_count"`
+		MyPriceRank       int     `json:"my_price_rank"`
+		MyPriceTtftRank   int     `json:"my_price_ttft_rank"`
+		PriceGapPct       float64 `json:"price_gap_pct"`
+	}
+
+	if len(channelIds) == 0 {
+		common.ApiSuccess(c, gin.H{
+			"active_strategy": setting.GetAutoRoutingStrategy(),
+			"items":           []biddingEntry{},
+		})
+		return
+	}
+
+	var myQuotes []model.ChannelQuote
+	if err := model.DB.Where("channel_id IN ? AND status = ?", channelIds, model.QuoteStatusEnabled).
+		Order("model_name ASC, pool_group ASC").Find(&myQuotes).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if len(myQuotes) == 0 {
+		common.ApiSuccess(c, gin.H{
+			"active_strategy": setting.GetAutoRoutingStrategy(),
+			"items":           []biddingEntry{},
+		})
+		return
+	}
+
+	var myChannels []model.Channel
+	if err := model.DB.Select("id, name").Where("id IN ?", channelIds).Find(&myChannels).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	chNames := make(map[int]string, len(myChannels))
+	for _, ch := range myChannels {
+		chNames[ch.Id] = ch.Name
+	}
+
+	modelSet := make(map[string]struct{}, len(myQuotes))
+	models := make([]string, 0, len(myQuotes))
+	for _, q := range myQuotes {
+		if _, seen := modelSet[q.ModelName]; !seen {
+			modelSet[q.ModelName] = struct{}{}
+			models = append(models, q.ModelName)
+		}
+	}
+
+	var marketQuotes []model.ChannelQuote
+	if err := model.DB.Where("model_name IN ? AND status = ?", models, model.QuoteStatusEnabled).
+		Find(&marketQuotes).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	enabledChannelIds := make(map[int]bool)
+	var allEnabled []struct{ Id int }
+	if err := model.DB.Model(&model.Channel{}).Select("id").Where("status = ?", common.ChannelStatusEnabled).Find(&allEnabled).Error; err == nil {
+		for _, row := range allEnabled {
+			enabledChannelIds[row.Id] = true
+		}
+	}
+
+	byModel := make(map[string][]model.ChannelQuote, len(models))
+	for _, mq := range marketQuotes {
+		if len(enabledChannelIds) > 0 && !enabledChannelIds[mq.ChannelId] {
+			continue
+		}
+		byModel[mq.ModelName] = append(byModel[mq.ModelName], mq)
+	}
+
+	items := make([]biddingEntry, 0, len(myQuotes))
+	for _, q := range myQuotes {
+		myBlended := model.BlendedQuotePrice(q.InputPrice, q.OutputPrice)
+		peers := byModel[q.ModelName]
+		peerIds := make([]int, 0, len(peers))
+		for _, p := range peers {
+			peerIds = append(peerIds, p.ChannelId)
+		}
+		liveByCh := model.GetChannelLiveMetricsForModel(peerIds, q.ModelName)
+
+		var myLive *model.ChannelLiveMetricSnapshot
+		if snap, ok := liveByCh[q.ChannelId]; ok {
+			copySnap := snap
+			myLive = &copySnap
+		}
+		myScore := service.ScoreOrderBookNode(myBlended, myLive, setting.AutoRoutingStrategyPriceTTFT)
+
+		marketMinPrice := myBlended
+		marketBestTtft := 0.0
+		priceRank := 1
+		scoreRank := 1
+		competitors := 0
+		for _, p := range peers {
+			pPrice := model.BlendedQuotePrice(p.InputPrice, p.OutputPrice)
+			if pPrice <= 0 {
+				continue
+			}
+			competitors++
+			if pPrice < marketMinPrice || marketMinPrice <= 0 {
+				marketMinPrice = pPrice
+			}
+			var pLive *model.ChannelLiveMetricSnapshot
+			if snap, ok := liveByCh[p.ChannelId]; ok {
+				copySnap := snap
+				pLive = &copySnap
+				if snap.TtftEmaMs > 0 && (marketBestTtft == 0 || snap.TtftEmaMs < marketBestTtft) {
+					marketBestTtft = snap.TtftEmaMs
+				}
+			}
+			if p.ChannelId == q.ChannelId && p.PoolGroup == q.PoolGroup {
+				continue
+			}
+			if pPrice+1e-9 < myBlended {
+				priceRank++
+			}
+			pScore := service.ScoreOrderBookNode(pPrice, pLive, setting.AutoRoutingStrategyPriceTTFT)
+			if pScore+1e-9 < myScore {
+				scoreRank++
+			}
+		}
+
+		gapPct := 0.0
+		if marketMinPrice > 0 && myBlended > marketMinPrice {
+			gapPct = ((myBlended - marketMinPrice) / marketMinPrice) * 100.0
+		}
+		entry := biddingEntry{
+			ChannelId:        q.ChannelId,
+			ChannelName:      chNames[q.ChannelId],
+			PoolGroup:        q.PoolGroup,
+			ModelName:        q.ModelName,
+			MyInputPrice:     q.InputPrice,
+			MyOutputPrice:    q.OutputPrice,
+			MyBlendedPrice:   myBlended,
+			QuoteSource:      q.Source,
+			MySuccessRate:    1.0,
+			MarketMinPrice:   marketMinPrice,
+			MarketBestTtftMs: marketBestTtft,
+			CompetitorCount:  competitors,
+			MyPriceRank:      priceRank,
+			MyPriceTtftRank:  scoreRank,
+			PriceGapPct:      gapPct,
+		}
+		if myLive != nil {
+			entry.MyTtftMs = myLive.TtftEmaMs
+			entry.MyTps = myLive.TpsEma
+			entry.MySuccessRate = myLive.SuccessEma
+			entry.SampleCount = myLive.SampleCount
+		}
+		items = append(items, entry)
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"active_strategy": setting.GetAutoRoutingStrategy(),
+		"items":           items,
 	})
 }
 

@@ -22,6 +22,17 @@ import { z } from 'zod'
 // API Key Schema & Types
 // ============================================================================
 
+export const tokenRoutingPolicySchema = z.object({
+  strategy: z.string().optional(),
+  max_ttft_ms: z.number().optional(),
+  min_tps: z.number().optional(),
+  max_price: z.number().optional(),
+  merchant_whitelist: z.array(z.string()).optional(),
+  merchant_blacklist: z.array(z.string()).optional(),
+})
+
+export type TokenRoutingPolicy = z.infer<typeof tokenRoutingPolicySchema>
+
 export const apiKeySchema = z.object({
   id: z.number(),
   name: z.string(),
@@ -47,6 +58,7 @@ export const apiKeySchema = z.object({
   model_limits: z.string().nullish().default(''),
   allow_ips: z.string().nullish().default(''),
   allow_user_quota_query: z.boolean().optional().default(false),
+  routing_policy: tokenRoutingPolicySchema.nullish(),
 })
 
 export type ApiKey = z.infer<typeof apiKeySchema>
@@ -96,6 +108,7 @@ export interface ApiKeyFormData {
   group: string
   auto_groups: string[]
   cross_group_retry: boolean
+  routing_policy?: TokenRoutingPolicy
 }
 
 export interface TokenAutoGroupsConfig {

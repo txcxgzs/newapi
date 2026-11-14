@@ -204,8 +204,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	basePriceData := relayInfo.PriceData
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		relayInfo.PriceData = basePriceData
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
@@ -239,6 +241,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		// The request plugins' reply checks read the answer this attempt
 		// writes; without a reply instance nothing changes.
+		attemptStart := time.Now()
 		finishReply := requestplugin.Reply(c, relayFormat, relayInfo)
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -253,6 +256,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		finishReply()
 
 		if newAPIError == nil {
+			service.RecordRelayChannelSuccess(relayInfo, attemptStart, relayInfo.PerformanceOutputTokens)
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
 			return
@@ -260,6 +264,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
+		service.RecordRelayChannelFailure(channel.Id, relayInfo.OriginModelName, newAPIError, attemptStart)
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
@@ -400,6 +405,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	if newAPIError != nil {
 		return nil, newAPIError
 	}
+	service.ApplySelectedChannelOrderBookContext(c, info, channel, selectGroup)
 	return channel, nil
 }
 

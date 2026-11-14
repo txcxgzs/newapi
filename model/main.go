@@ -379,6 +379,7 @@ func migrateDB() error {
 		// New API Pro：行情、商家与智能路由
 		&ChannelQuote{},
 		&ChannelMetric{},
+		&ChannelLiveMetric{},
 		&MarketCandle{},
 		&MerchantProfile{},
 		&MerchantApplication{},

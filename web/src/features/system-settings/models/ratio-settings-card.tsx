@@ -145,6 +145,15 @@ const createGroupSchema = (t: Translate) =>
     }),
     MaxTokenAutoGroups: positiveIntegerSchema(t('Enter a positive integer')),
     DefaultUseAutoGroup: z.boolean(),
+    AutoRoutingStrategy: z.enum([
+      'order',
+      'round_robin',
+      'lowest_price',
+      'merchant_first',
+      'price_ttft',
+      'lowest_ttft',
+    ]),
+    AutoIncludeMerchantGroups: z.boolean(),
     GroupSpecialUsableGroup: createJsonStringField(t),
   })
 
@@ -251,6 +260,8 @@ export function RatioSettingsCard({
     AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
     MaxTokenAutoGroups: groupDefaults.MaxTokenAutoGroups,
     DefaultUseAutoGroup: groupDefaults.DefaultUseAutoGroup,
+    AutoRoutingStrategy: groupDefaults.AutoRoutingStrategy || 'order',
+    AutoIncludeMerchantGroups: groupDefaults.AutoIncludeMerchantGroups ?? false,
     GroupSpecialUsableGroup: normalizeJsonString(
       groupDefaults.GroupSpecialUsableGroup
     ),
@@ -341,6 +352,9 @@ export function RatioSettingsCard({
       AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
       MaxTokenAutoGroups: groupDefaults.MaxTokenAutoGroups,
       DefaultUseAutoGroup: groupDefaults.DefaultUseAutoGroup,
+      AutoRoutingStrategy: groupDefaults.AutoRoutingStrategy || 'order',
+      AutoIncludeMerchantGroups:
+        groupDefaults.AutoIncludeMerchantGroups ?? false,
       GroupSpecialUsableGroup: normalizeJsonString(
         groupDefaults.GroupSpecialUsableGroup
       ),
@@ -419,6 +433,8 @@ export function RatioSettingsCard({
         AutoGroups: normalizeJsonString(values.AutoGroups),
         MaxTokenAutoGroups: values.MaxTokenAutoGroups,
         DefaultUseAutoGroup: values.DefaultUseAutoGroup,
+        AutoRoutingStrategy: values.AutoRoutingStrategy || 'order',
+        AutoIncludeMerchantGroups: values.AutoIncludeMerchantGroups,
         GroupSpecialUsableGroup: normalizeJsonString(
           values.GroupSpecialUsableGroup
         ),

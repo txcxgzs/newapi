@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -143,10 +145,15 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	filters := GetChannelConstraints(param.Ctx).Filters
 	affinityRetryOffset := param.Ctx.GetInt(ginKeyChannelAffinityRetryOffset)
 
+	policy := ResolveEffectiveRoutingPolicy(param.Ctx)
 	if param.TokenGroup == "auto" {
-		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
+		autoGroups := ResolveAutoGroupsForRequest(param.Ctx, userGroup, param.ModelName, filters)
 		if len(autoGroups) == 0 {
 			return nil, selectGroup, errors.New("auto groups is not enabled")
+		}
+
+		if IsOrderBookRoutingStrategy(policy.Strategy) || policy.HasFilters() {
+			return selectOrderBookAutoChannel(param, policy, autoGroups, userGroup, filters, affinityRetryOffset)
 		}
 
 		// startGroupIndex: the group index to start searching from
@@ -218,6 +225,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
+		if policy.HasFilters() || (policy.StrategyOverridden && IsOrderBookRoutingStrategy(policy.Strategy)) {
+			return selectOrderBookAutoChannel(param, policy, []string{param.TokenGroup}, userGroup, filters, affinityRetryOffset)
+		}
 		channel, err = model.GetRandomSatisfiedChannel(
 			param.TokenGroup,
 			param.ModelName,
@@ -229,6 +239,98 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 	}
 	return channel, selectGroup, nil
+}
+
+func selectOrderBookAutoChannel(
+	param *RetryParam,
+	policy EffectiveRoutingPolicy,
+	autoGroups []string,
+	userGroup string,
+	filters []dto.ChannelFilter,
+	affinityRetryOffset int,
+) (*model.Channel, string, error) {
+	scoreStrategy := policy.Strategy
+	if !IsOrderBookRoutingStrategy(scoreStrategy) {
+		// Preserve group priority order when strategy is order/round_robin/merchant_first while still applying hard buyer filters.
+		scoreStrategy = setting.AutoRoutingStrategyLowestPrice
+	}
+	candidates := BuildOrderBookCandidates(autoGroups, userGroup, param.ModelName, scoreStrategy, filters)
+	if len(candidates) == 0 {
+		return nil, param.TokenGroup, nil
+	}
+	if !IsOrderBookRoutingStrategy(policy.Strategy) {
+		groupRank := make(map[string]int, len(autoGroups))
+		for idx, g := range autoGroups {
+			groupRank[g] = idx
+		}
+		sortOrderBookByGroupThenPriority(candidates, groupRank)
+	}
+	if policy.HasFilters() {
+		candidates = FilterOrderBookCandidates(candidates, policy)
+		if len(candidates) == 0 {
+			return nil, param.TokenGroup, errors.New("no channel satisfies routing policy constraints")
+		}
+	}
+
+	usedChannelIDs := make(map[int]struct{})
+	for _, rawID := range param.Ctx.GetStringSlice("use_channel") {
+		if cid, err := strconv.Atoi(rawID); err == nil && cid > 0 {
+			usedChannelIDs[cid] = struct{}{}
+		}
+	}
+
+	// Deduplicate by channel ID (keep best-scoring group offer first) and drop already-tried channels.
+	untried := make([]OrderBookCandidate, 0, len(candidates))
+	seenChannelIDs := make(map[int]struct{}, len(candidates))
+	for _, cand := range candidates {
+		if cand.Channel == nil {
+			continue
+		}
+		if _, tried := usedChannelIDs[cand.Channel.Id]; tried {
+			continue
+		}
+		if _, dup := seenChannelIDs[cand.Channel.Id]; dup {
+			continue
+		}
+		seenChannelIDs[cand.Channel.Id] = struct{}{}
+		untried = append(untried, cand)
+	}
+	if len(untried) == 0 {
+		return nil, param.TokenGroup, nil
+	}
+
+	crossGroupRetry := common.GetContextKeyBool(param.Ctx, constant.ContextKeyTokenCrossGroupRetry)
+	if !crossGroupRetry {
+		if prevGroup, ok := common.GetContextKey(param.Ctx, constant.ContextKeyAutoGroup); ok {
+			if prevGroupStr, ok := prevGroup.(string); ok && prevGroupStr != "" {
+				sameGroup := make([]OrderBookCandidate, 0, len(untried))
+				for _, cand := range untried {
+					if cand.Group == prevGroupStr {
+						sameGroup = append(sameGroup, cand)
+					}
+				}
+				if len(sameGroup) > 0 {
+					untried = sameGroup
+				}
+			}
+		}
+	}
+
+	var chosen OrderBookCandidate
+	if len(usedChannelIDs) > 0 {
+		chosen = untried[0]
+	} else {
+		retryIdx := max(param.GetRetry()-affinityRetryOffset, 0)
+		if retryIdx >= len(untried) {
+			return nil, param.TokenGroup, nil
+		}
+		chosen = untried[retryIdx]
+	}
+
+	common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, chosen.Group)
+	logger.LogDebug(param.Ctx, "OrderBook selected group=%s channel=%d price=%.6f ttftMs=%.1f score=%.6f",
+		chosen.Group, chosen.Channel.Id, chosen.EffectivePrice, chosen.TtftMs, chosen.Score)
+	return chosen.Channel, chosen.Group, nil
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {

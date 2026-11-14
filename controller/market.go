@@ -5,13 +5,17 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -332,6 +336,204 @@ func GetMarketKline(c *gin.Context) {
 			"model":    modelName,
 			"interval": interval,
 			"candles":  candles,
+		},
+	})
+}
+
+// MarketOrderBookEntry represents one anonymized public Order-Book quote & live telemetry row.
+type MarketOrderBookEntry struct {
+	Rank          int     `json:"rank"`
+	Pool          string  `json:"pool"`
+	Model         string  `json:"model"`
+	MerchantCode  string  `json:"merchant_code"`
+	MerchantName  string  `json:"merchant_name"`
+	InputPrice    float64 `json:"input_price"`
+	OutputPrice   float64 `json:"output_price"`
+	BlendedPrice  float64 `json:"blended_price"`
+	QuoteSource   string  `json:"quote_source"`
+	TtftMs        float64 `json:"ttft_ms"`
+	Tps           float64 `json:"tps"`
+	SuccessRate   float64 `json:"success_rate"`
+	SampleCount   int     `json:"sample_count"`
+	HasLiveMetric bool    `json:"has_live_metric"`
+	Score         float64 `json:"score"`
+	UpdatedAt     int64   `json:"updated_at"`
+}
+
+// GetMarketOrderBook returns real-time Order-Book ask depth (price + live TTFT/TPS/success rate + merchant badge)
+// without exposing internal channel IDs, keys, or upstream URLs.
+func GetMarketOrderBook(c *gin.Context) {
+	if !requireMarketVisible(c) {
+		return
+	}
+	poolFilter := strings.TrimSpace(c.Query("pool"))
+	modelFilter := strings.TrimSpace(c.Query("model"))
+	strategy := strings.TrimSpace(c.Query("strategy"))
+	if !setting.IsValidAutoRoutingStrategy(strategy) || !service.IsOrderBookRoutingStrategy(strategy) {
+		strategy = setting.GetAutoRoutingStrategy()
+		if !service.IsOrderBookRoutingStrategy(strategy) {
+			strategy = setting.AutoRoutingStrategyPriceTTFT
+		}
+	} else {
+		strategy = setting.NormalizeAutoRoutingStrategy(strategy)
+	}
+
+	if model.DB == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"strategy":   strategy,
+				"entries":    []MarketOrderBookEntry{},
+				"updated_at": time.Now().Unix(),
+			},
+		})
+		return
+	}
+
+	var enabledChannels []model.Channel
+	if err := model.DB.Select("id, merchant_id, status").Where("status = ?", common.ChannelStatusEnabled).Find(&enabledChannels).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	channelMerchant := make(map[int]int, len(enabledChannels))
+	for _, ch := range enabledChannels {
+		channelMerchant[ch.Id] = ch.GetMerchantId()
+	}
+
+	quotes, err := model.ListEnabledChannelQuotes(poolFilter, modelFilter)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	merchantMap := model.GetMerchantDisplayMap()
+	liveRows := model.GetAllChannelLiveMetrics()
+	type liveKey struct {
+		cid   int
+		model string
+	}
+	liveIndex := make(map[liveKey]model.ChannelLiveMetricSnapshot, len(liveRows))
+	for _, lr := range liveRows {
+		liveIndex[liveKey{cid: lr.ChannelId, model: lr.ModelName}] = lr
+	}
+
+	entries := make([]MarketOrderBookEntry, 0, len(quotes))
+	for _, q := range quotes {
+		merchantId, enabled := channelMerchant[q.ChannelId]
+		if !enabled {
+			continue
+		}
+		inPrice := q.InputPrice
+		if inPrice <= 0 && q.RateMultiplier > 0 {
+			inPrice = q.RateMultiplier * model.QuoteRatioBase
+		}
+		if inPrice <= 0 {
+			continue
+		}
+		outPrice := q.OutputPrice
+		if outPrice <= 0 {
+			compRatio := ratio_setting.GetCompletionRatio(q.ModelName)
+			if compRatio <= 0 {
+				compRatio = 1
+			}
+			outPrice = inPrice * compRatio
+		}
+		blended := model.BlendedQuotePrice(inPrice, outPrice)
+		if blended <= 0 {
+			blended = inPrice
+		}
+
+		var livePtr *model.ChannelLiveMetricSnapshot
+		if lr, ok := liveIndex[liveKey{cid: q.ChannelId, model: q.ModelName}]; ok {
+			copyLr := lr
+			livePtr = &copyLr
+		} else if norm := ratio_setting.RoutingMatchModelName(q.ModelName); norm != "" && norm != q.ModelName {
+			if lr, ok := liveIndex[liveKey{cid: q.ChannelId, model: norm}]; ok {
+				copyLr := lr
+				livePtr = &copyLr
+			}
+		}
+
+		score := service.ScoreOrderBookNode(blended, livePtr, strategy)
+		ttft := service.OrderBookDefaultColdStartTTFTMs
+		tps := 0.0
+		succRate := 1.0
+		samples := 0
+		hasLive := false
+		if livePtr != nil && livePtr.SampleCount > 0 {
+			hasLive = true
+			samples = livePtr.SampleCount
+			succRate = livePtr.SuccessEma
+			tps = livePtr.TpsEma
+			if livePtr.TtftEmaMs > 0 {
+				ttft = livePtr.TtftEmaMs
+			}
+		}
+
+		mName := "Platform"
+		mCode := "platform"
+		if merchantId > 0 {
+			if mi, ok := merchantMap[merchantId]; ok {
+				mName = mi.DisplayName
+				mCode = mi.MerchantCode
+			} else {
+				mName = "Merchant #" + strconv.Itoa(merchantId)
+				mCode = "m" + strconv.Itoa(merchantId)
+			}
+		}
+
+		entries = append(entries, MarketOrderBookEntry{
+			Pool:          q.PoolGroup,
+			Model:         q.ModelName,
+			MerchantCode:  mCode,
+			MerchantName:  mName,
+			InputPrice:    inPrice,
+			OutputPrice:   outPrice,
+			BlendedPrice:  blended,
+			QuoteSource:   q.Source,
+			TtftMs:        ttft,
+			Tps:           tps,
+			SuccessRate:   succRate,
+			SampleCount:   samples,
+			HasLiveMetric: hasLive,
+			Score:         score,
+			UpdatedAt:     q.UpdatedAt,
+		})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		if a.Pool != b.Pool {
+			return a.Pool < b.Pool
+		}
+		if a.Model != b.Model {
+			return a.Model < b.Model
+		}
+		if a.Score != b.Score {
+			return a.Score < b.Score
+		}
+		if a.BlendedPrice != b.BlendedPrice {
+			return a.BlendedPrice < b.BlendedPrice
+		}
+		return a.TtftMs < b.TtftMs
+	})
+
+	rankMap := make(map[marketKey]int)
+	for i := range entries {
+		k := marketKey{pool: entries[i].Pool, model: entries[i].Model}
+		rankMap[k]++
+		entries[i].Rank = rankMap[k]
+	}
+	if len(entries) > 500 {
+		entries = entries[:500]
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"strategy":   strategy,
+			"entries":    entries,
+			"updated_at": time.Now().Unix(),
 		},
 	})
 }

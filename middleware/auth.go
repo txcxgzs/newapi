@@ -798,6 +798,11 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 			common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, autoGroups)
 		}
 	}
+	if policy, err := token.GetRoutingPolicy(); err != nil {
+		common.SysError(common.LogText("failed to parse routing policy for token %d: %v", token.Id, err))
+	} else if policy != nil {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingPolicy, policy)
+	}
 	if len(parts) > 1 {
 		if model.IsAdmin(token.UserId) {
 			id, err := strconv.Atoi(parts[1])

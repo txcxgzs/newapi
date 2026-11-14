@@ -34,14 +34,69 @@ func (input *tokenAutoGroupsInput) UnmarshalJSON(data []byte) error {
 
 type tokenRequest struct {
 	model.Token
-	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
+	AutoGroups    tokenAutoGroupsInput    `json:"auto_groups"`
+	RoutingPolicy *model.TokenRoutingPolicy `json:"routing_policy"`
 	// 指针区分“未传”和显式 false：新建时未传即开启，更新时未传则保留原值。
 	AllowUserQuotaQuery *bool `json:"allow_user_quota_query"`
 }
 
 type tokenResponse struct {
 	*model.Token
-	AutoGroups []string `json:"auto_groups"`
+	AutoGroups    []string                  `json:"auto_groups"`
+	RoutingPolicy *model.TokenRoutingPolicy `json:"routing_policy,omitempty"`
+}
+
+func normalizeRoutingPolicyInput(in *model.TokenRoutingPolicy) (*model.TokenRoutingPolicy, string) {
+	if in == nil {
+		return nil, ""
+	}
+	out := &model.TokenRoutingPolicy{
+		Strategy:  strings.TrimSpace(in.Strategy),
+		MaxTtftMs: in.MaxTtftMs,
+		MinTps:    in.MinTps,
+		MaxPrice:  in.MaxPrice,
+	}
+	if out.Strategy != "" && !setting.IsValidAutoRoutingStrategy(out.Strategy) {
+		return nil, "invalid routing strategy"
+	}
+	if out.MaxTtftMs < 0 {
+		out.MaxTtftMs = 0
+	}
+	if out.MinTps < 0 {
+		out.MinTps = 0
+	}
+	if out.MaxPrice < 0 {
+		out.MaxPrice = 0
+	}
+	dedup := func(items []string) []string {
+		if len(items) == 0 {
+			return nil
+		}
+		seen := make(map[string]struct{}, len(items))
+		res := make([]string, 0, len(items))
+		for _, item := range items {
+			trimmed := strings.TrimSpace(item)
+			if trimmed == "" {
+				continue
+			}
+			key := strings.ToLower(trimmed)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			res = append(res, trimmed)
+		}
+		if len(res) == 0 {
+			return nil
+		}
+		return res
+	}
+	out.MerchantWhitelist = dedup(in.MerchantWhitelist)
+	out.MerchantBlacklist = dedup(in.MerchantBlacklist)
+	if out.IsEmpty() {
+		return nil, ""
+	}
+	return out, ""
 }
 
 func maxTokenQuota() int {
@@ -68,7 +123,12 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if len(autoGroups) == 0 {
 		autoGroups = nil
 	}
-	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	routingPolicy, err := token.GetRoutingPolicy()
+	if err != nil {
+		common.SysError(common.LogText("failed to parse routing policy for token %d: %v", token.Id, err))
+		routingPolicy = nil
+	}
+	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups, RoutingPolicy: routingPolicy}
 }
 
 func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
@@ -364,6 +424,17 @@ func AddToken(c *gin.Context) {
 		AutoGroups:         token.AutoGroups,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
+	if request.RoutingPolicy != nil {
+		policy, errMsg := normalizeRoutingPolicyInput(request.RoutingPolicy)
+		if errMsg != "" {
+			common.ApiErrorT(c, errMsg)
+			return
+		}
+		if err := cleanToken.SetRoutingPolicy(policy); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
 	err = cleanToken.Insert()
 	if err != nil {
 		common.ApiError(c, err)
@@ -469,6 +540,17 @@ func UpdateToken(c *gin.Context) {
 				return
 			}
 		}
+		if request.RoutingPolicy != nil {
+			policy, errMsg := normalizeRoutingPolicyInput(request.RoutingPolicy)
+			if errMsg != "" {
+				common.ApiErrorT(c, errMsg)
+				return
+			}
+			if err := cleanToken.SetRoutingPolicy(policy); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 	}
 	err = cleanToken.Update()
 	if err != nil {
@@ -496,6 +578,7 @@ func UpdateToken(c *gin.Context) {
 			{"group", previous.Group != cleanToken.Group},
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
+			{"routing_policy", previous.RoutingPolicy != cleanToken.RoutingPolicy},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)

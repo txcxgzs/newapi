@@ -45,6 +45,12 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       auto_groups_mode: z.enum(['inherit', 'custom']),
       auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
+      routing_strategy: z.string().optional(),
+      max_ttft_ms: z.number().min(0).optional(),
+      min_tps: z.number().min(0).optional(),
+      max_price: z.number().min(0).optional(),
+      merchant_whitelist: z.string().optional(),
+      merchant_blacklist: z.string().optional(),
       tokenCount: z.number().min(1).optional(),
     })
     .superRefine((data, ctx) => {
@@ -116,6 +122,12 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   auto_groups_mode: 'inherit',
   auto_groups: [],
   cross_group_retry: true,
+  routing_strategy: '',
+  max_ttft_ms: 0,
+  min_tps: 0,
+  max_price: 0,
+  merchant_whitelist: '',
+  merchant_blacklist: '',
   tokenCount: 1,
 }
 
@@ -138,9 +150,33 @@ export function getApiKeyFormDefaultValues(
 /**
  * Transform form data to API payload
  */
+function parseMerchantSelectorList(raw: string | undefined): string[] {
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
+  const strategy = (data.routing_strategy || '').trim()
+  const maxTtftMs =
+    data.max_ttft_ms && Number.isFinite(data.max_ttft_ms) && data.max_ttft_ms > 0
+      ? Math.floor(data.max_ttft_ms)
+      : 0
+  const minTps =
+    data.min_tps && Number.isFinite(data.min_tps) && data.min_tps > 0
+      ? data.min_tps
+      : 0
+  const maxPrice =
+    data.max_price && Number.isFinite(data.max_price) && data.max_price > 0
+      ? data.max_price
+      : 0
+  const merchantWhitelist = parseMerchantSelectorList(data.merchant_whitelist)
+  const merchantBlacklist = parseMerchantSelectorList(data.merchant_blacklist)
+
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -160,6 +196,16 @@ export function transformFormDataToPayload(
         ? data.auto_groups
         : [],
     cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
+    routing_policy: {
+      strategy: strategy || undefined,
+      max_ttft_ms: maxTtftMs || undefined,
+      min_tps: minTps || undefined,
+      max_price: maxPrice || undefined,
+      merchant_whitelist:
+        merchantWhitelist.length > 0 ? merchantWhitelist : undefined,
+      merchant_blacklist:
+        merchantBlacklist.length > 0 ? merchantBlacklist : undefined,
+    },
   }
 }
 
@@ -195,6 +241,16 @@ export function transformApiKeyToFormDefaults(
     auto_groups_mode: autoGroupsMode,
     auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
+    routing_strategy: apiKey.routing_policy?.strategy || '',
+    max_ttft_ms: apiKey.routing_policy?.max_ttft_ms || 0,
+    min_tps: apiKey.routing_policy?.min_tps || 0,
+    max_price: apiKey.routing_policy?.max_price || 0,
+    merchant_whitelist: (apiKey.routing_policy?.merchant_whitelist ?? []).join(
+      ', '
+    ),
+    merchant_blacklist: (apiKey.routing_policy?.merchant_blacklist ?? []).join(
+      ', '
+    ),
     tokenCount: 1,
   }
 }

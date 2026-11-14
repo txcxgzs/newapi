@@ -734,6 +734,32 @@ export function DetailsDialog(props: DetailsDialogProps) {
               mono
             />
           )}
+          {other?.merchant_name && (
+            <DetailRow
+              label={t('Provider')}
+              value={
+                other.merchant_code
+                  ? `${other.merchant_name} (${other.merchant_code})`
+                  : other.merchant_name
+              }
+            />
+          )}
+          {(other?.routing_strategy || other?.quote_source) && (
+            <DetailRow
+              label={t('Routing Receipt')}
+              value={[other.routing_strategy, other.quote_source]
+                .filter(Boolean)
+                .join(' · ')}
+              mono
+            />
+          )}
+          {other?.stream_tps != null && other.stream_tps > 0 && (
+            <DetailRow
+              label={t('Generation Speed')}
+              value={`${other.stream_tps.toFixed(1)} tok/s`}
+              mono
+            />
+          )}
 
           {channelChain && props.isAdmin && (
             <DetailRow label={t('Retry Chain')} value={channelChain} mono />

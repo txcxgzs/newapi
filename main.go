@@ -112,6 +112,13 @@ func main() {
 	// endpoint inference can read cached route settings on first request.
 	model.GetPricing()
 
+	// Restore per-(channel, model) live Order-Book telemetry from DB and keep syncing.
+	if err := model.LoadChannelLiveMetricsFromDB(); err != nil {
+		common.SysError(common.LogText("failed to load channel live metrics: %s", err.Error()))
+	}
+	go model.StartChannelLiveMetricSyncLoop(15 * time.Second)
+	model.RefreshMerchantDisplayCache()
+
 	// The first plugin sync finishes before the server accepts requests, so no
 	// request runs without the uploaded plugins.
 	controller.SyncTaskPluginsOnce()
@@ -267,6 +274,9 @@ func main() {
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()
+	}
+	if err := model.FlushChannelLiveMetrics(); err != nil {
+		common.SysError(common.LogText("failed to flush channel live metrics on shutdown: %s", err.Error()))
 	}
 	common.SysLog(common.LogText("server exited"))
 }

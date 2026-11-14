@@ -339,6 +339,32 @@ function buildTypeDetailSegments(
     }
   }
 
+  if (other.merchant_name) {
+    segments.push({
+      text: other.merchant_code
+        ? `${t('Provider')}: ${other.merchant_name} (${other.merchant_code})`
+        : `${t('Provider')}: ${other.merchant_name}`,
+    })
+  }
+  if (other.routing_strategy || other.quote_source) {
+    const parts = [
+      other.routing_strategy ? other.routing_strategy : null,
+      other.quote_source ? other.quote_source : null,
+    ].filter(Boolean)
+    if (parts.length > 0) {
+      segments.push({
+        text: parts.join(' · '),
+        muted: true,
+      })
+    }
+  }
+  if (other.stream_tps != null && other.stream_tps > 0) {
+    segments.push({
+      text: `${other.stream_tps.toFixed(1)} tok/s`,
+      muted: true,
+    })
+  }
+
   if (other.is_system_prompt_overwritten) {
     segments.push({
       text: t('System Prompt Override'),
@@ -653,7 +679,7 @@ export function useCommonLogsColumns(
                 )}
               </Tooltip>
             </TooltipProvider>
-            {(group || groupRatio != null) && (
+            {(group || groupRatio != null || other?.merchant_name) && (
               <span className='block max-w-full truncate text-xs leading-none'>
                 {group ? (
                   <GroupBadge
@@ -668,6 +694,11 @@ export function useCommonLogsColumns(
                 {groupRatio != null ? (
                   <span className='text-muted-foreground/60 relative top-px align-baseline tabular-nums'>
                     {formatRatioCompact(groupRatio)}x
+                  </span>
+                ) : null}
+                {other?.merchant_name ? (
+                  <span className='text-muted-foreground/80 ml-1.5 align-baseline'>
+                    · {sensitiveVisible ? other.merchant_name : '••••'}
                   </span>
                 ) : null}
               </span>

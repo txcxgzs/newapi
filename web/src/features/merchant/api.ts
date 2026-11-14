@@ -23,6 +23,7 @@ import type {
   ChannelQuote,
   MerchantAppType,
   MerchantApplication,
+  MerchantBiddingResponse,
   MerchantEarningsPage,
   MerchantLogsPage,
   MerchantModelQuote,
@@ -30,6 +31,7 @@ import type {
   MerchantPortalPools,
   MerchantPortalQuote,
   MerchantProfile,
+  MerchantRateUpdateResult,
   MerchantReviewResult,
   MerchantRow,
   MerchantUpstreamProbeResult,
@@ -195,15 +197,38 @@ export async function getMerchantLogs(
   )
 }
 
-/** 提交商家专属分组倍率 / 描述 / Auto 自动路由变更申请（需管理员审核）。 */
+/** 商家实时调整专属分组倍率 / 描述 / Auto 自动路由接入（立即生效，无需审核）。 */
 export async function updateMerchantRate(body: {
   group_name?: string
   channel_id?: number
   rate_multiplier: number
   group_desc?: string
   join_auto_group?: boolean
-}): Promise<MerchantApplication> {
+}): Promise<MerchantRateUpdateResult> {
   return unwrap(await api.put('/api/merchant/portal/rate', body))
+}
+
+/** 商家按模型实时出价或恢复派生价（立即生效，无需审核）。 */
+export async function updateMerchantQuotes(body: {
+  channel_id: number
+  pool_group?: string
+  model_name: string
+  input_price?: number
+  output_price?: number
+  rate_multiplier?: number
+  reset_to_derived?: boolean
+}): Promise<{
+  pending_review: boolean
+  applied: boolean
+  updated_count: number
+  reset_count: number
+}> {
+  return unwrap(await api.put('/api/merchant/portal/quotes', body))
+}
+
+/** 获取商家各模型在全网 Order-Book 中的竞价排名、市场最低价与实测 TTFT/TPS。 */
+export async function getMerchantBidding(): Promise<MerchantBiddingResponse> {
+  return unwrap(await api.get('/api/merchant/portal/bidding'))
 }
 
 /** 商家对自己名下渠道触发一轮报价同步；不传 ids 则同步全部自己的渠道。 */

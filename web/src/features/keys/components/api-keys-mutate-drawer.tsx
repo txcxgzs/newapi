@@ -18,7 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
+import {
+  ChevronDown,
+  KeyRound,
+  Settings2,
+  SlidersHorizontal,
+  WalletCards,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm, type SubmitErrorHandler } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -35,6 +41,7 @@ import {
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
 import { MultiSelect } from '@/components/multi-select'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
@@ -51,6 +58,13 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Sheet,
   SheetClose,
@@ -369,6 +383,38 @@ export function ApiKeysMutateDrawer({
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
   const autoGroupsMode = form.watch('auto_groups_mode')
   const unlimitedQuota = form.watch('unlimited_quota')
+  const [orderBookOpen, setOrderBookOpen] = useState(
+    () =>
+      Boolean(currentRow?.routing_policy?.strategy) ||
+      Boolean(currentRow?.routing_policy?.max_ttft_ms) ||
+      Boolean(currentRow?.routing_policy?.min_tps) ||
+      Boolean(currentRow?.routing_policy?.max_price) ||
+      Boolean(currentRow?.routing_policy?.merchant_whitelist?.length) ||
+      Boolean(currentRow?.routing_policy?.merchant_blacklist?.length)
+  )
+  const watchedStrategy = form.watch('routing_strategy') || ''
+  const watchedMaxTtft = form.watch('max_ttft_ms') || 0
+  const watchedMinTps = form.watch('min_tps') || 0
+  const watchedMaxPrice = form.watch('max_price') || 0
+  const watchedWhitelist = (form.watch('merchant_whitelist') || '').trim()
+  const watchedBlacklist = (form.watch('merchant_blacklist') || '').trim()
+  const activeConstraintCount =
+    (watchedStrategy ? 1 : 0) +
+    (watchedMaxTtft > 0 ? 1 : 0) +
+    (watchedMinTps > 0 ? 1 : 0) +
+    (watchedMaxPrice > 0 ? 1 : 0) +
+    (watchedWhitelist ? 1 : 0) +
+    (watchedBlacklist ? 1 : 0)
+
+  const routingStrategyLabels: Record<string, string> = {
+    __inherit__: t('Follow system default'),
+    price_ttft: t('Best value (price × TTFT)'),
+    lowest_price: t('Lowest quote price first'),
+    lowest_ttft: t('Fastest first token (lowest TTFT)'),
+    merchant_first: t('Merchant groups first'),
+    round_robin: t('Round-robin balance'),
+    order: t('Order by configured priority list'),
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -512,6 +558,290 @@ export function ApiKeysMutateDrawer({
                   )}
                 />
               )}
+
+              <Collapsible
+                open={orderBookOpen}
+                onOpenChange={setOrderBookOpen}
+              >
+                <CollapsibleTrigger
+                  render={
+                    <button
+                      type='button'
+                      className='border-border/60 bg-muted/20 hover:bg-muted/40 flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors'
+                    />
+                  }
+                >
+                  <span className='flex items-center gap-2'>
+                    <SlidersHorizontal className='text-primary h-3.5 w-3.5' />
+                    <span>{t('Order-Book routing & risk constraints')}</span>
+                    {activeConstraintCount > 0 && (
+                      <Badge variant='secondary' className='h-5 px-1.5 text-[10px]'>
+                        {t('{{count}} active', { count: activeConstraintCount })}
+                      </Badge>
+                    )}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      'h-4 w-4 transition-transform',
+                      orderBookOpen && 'rotate-180'
+                    )}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className='border-border/50 mt-2 space-y-3 rounded-md border p-3'>
+                  <div className='flex flex-wrap items-center justify-between gap-1.5'>
+                    <span className='text-muted-foreground text-[11px]'>
+                      {t('Quick presets')}
+                    </span>
+                    <div className='flex flex-wrap gap-1.5'>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-6 px-2 text-[11px]'
+                        onClick={() => {
+                          form.setValue('routing_strategy', 'price_ttft', {
+                            shouldDirty: true,
+                          })
+                          form.setValue('max_ttft_ms', 1200, {
+                            shouldDirty: true,
+                          })
+                          form.setValue('min_tps', 20, { shouldDirty: true })
+                        }}
+                      >
+                        {t('Balanced SLA')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-6 px-2 text-[11px]'
+                        onClick={() => {
+                          form.setValue('routing_strategy', 'lowest_ttft', {
+                            shouldDirty: true,
+                          })
+                          form.setValue('max_ttft_ms', 600, {
+                            shouldDirty: true,
+                          })
+                          form.setValue('min_tps', 35, { shouldDirty: true })
+                        }}
+                      >
+                        {t('Ultra-low TTFT')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-6 px-2 text-[11px]'
+                        onClick={() => {
+                          form.setValue('routing_strategy', 'lowest_price', {
+                            shouldDirty: true,
+                          })
+                          form.setValue('max_ttft_ms', 0, { shouldDirty: true })
+                          form.setValue('min_tps', 0, { shouldDirty: true })
+                        }}
+                      >
+                        {t('Lowest Cost')}
+                      </Button>
+                      {activeConstraintCount > 0 && (
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='sm'
+                          className='h-6 px-2 text-[11px]'
+                          onClick={() => {
+                            form.setValue('routing_strategy', '', {
+                              shouldDirty: true,
+                            })
+                            form.setValue('max_ttft_ms', 0, {
+                              shouldDirty: true,
+                            })
+                            form.setValue('min_tps', 0, { shouldDirty: true })
+                            form.setValue('max_price', 0, { shouldDirty: true })
+                            form.setValue('merchant_whitelist', '', {
+                              shouldDirty: true,
+                            })
+                            form.setValue('merchant_blacklist', '', {
+                              shouldDirty: true,
+                            })
+                          }}
+                        >
+                          {t('Reset')}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  <FormField
+                    control={form.control}
+                    name='routing_strategy'
+                    render={({ field }) => {
+                      const selectKey = field.value || '__inherit__'
+                      return (
+                        <FormItem>
+                          <FormLabel className='text-xs'>
+                            {t('Routing strategy override')}
+                          </FormLabel>
+                          <Select
+                            value={selectKey}
+                            onValueChange={(val) =>
+                              field.onChange(val === '__inherit__' ? '' : val)
+                            }
+                          >
+                            <FormControl>
+                              <SelectTrigger className='h-8 w-full text-xs'>
+                                <SelectValue>
+                                  {routingStrategyLabels[selectKey] ?? selectKey}
+                                </SelectValue>
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value='__inherit__'>
+                                {t('Follow system default')}
+                              </SelectItem>
+                              <SelectItem value='price_ttft'>
+                                {t('Best value (price × TTFT)')}
+                              </SelectItem>
+                              <SelectItem value='lowest_price'>
+                                {t('Lowest quote price first')}
+                              </SelectItem>
+                              <SelectItem value='lowest_ttft'>
+                                {t('Fastest first token (lowest TTFT)')}
+                              </SelectItem>
+                              <SelectItem value='merchant_first'>
+                                {t('Merchant groups first')}
+                              </SelectItem>
+                              <SelectItem value='round_robin'>
+                                {t('Round-robin balance')}
+                              </SelectItem>
+                              <SelectItem value='order'>
+                                {t('Order by configured priority list')}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </FormItem>
+                      )
+                    }}
+                  />
+                  <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
+                    <FormField
+                      control={form.control}
+                      name='max_ttft_ms'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='text-xs'>
+                            {t('Max TTFT (ms)')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              step={50}
+                              placeholder='0'
+                              className='h-8 text-xs'
+                              value={field.value ?? 0}
+                              onChange={(e) =>
+                                field.onChange(Number(e.target.value) || 0)
+                              }
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name='min_tps'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='text-xs'>
+                            {t('Min TPS (tok/s)')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              step={5}
+                              placeholder='0'
+                              className='h-8 text-xs'
+                              value={field.value ?? 0}
+                              onChange={(e) =>
+                                field.onChange(Number(e.target.value) || 0)
+                              }
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name='max_price'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='text-xs'>
+                            {t('Max Price ($/1M)')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              step={0.1}
+                              placeholder='0'
+                              className='h-8 text-xs'
+                              value={field.value ?? 0}
+                              onChange={(e) =>
+                                field.onChange(Number(e.target.value) || 0)
+                              }
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                  <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                    <FormField
+                      control={form.control}
+                      name='merchant_whitelist'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='text-xs'>
+                            {t('Merchant whitelist')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder='m1, Platform'
+                              className='h-8 text-xs'
+                              value={field.value ?? ''}
+                              onChange={field.onChange}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name='merchant_blacklist'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='text-xs'>
+                            {t('Merchant blacklist')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder='m2'
+                              className='h-8 text-xs'
+                              value={field.value ?? ''}
+                              onChange={field.onChange}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                  <p className='text-muted-foreground text-[11px] leading-relaxed'>
+                    {t(
+                      '0 leaves threshold unconstrained. Request headers (X-Routing-Strategy, X-Max-TTFT-Ms, X-Min-TPS, X-Max-Price, X-Merchant-Allow, X-Merchant-Deny) override token settings.'
+                    )}
+                  </p>
+                </CollapsibleContent>
+              </Collapsible>
 
               <FormField
                 control={form.control}

@@ -265,6 +265,8 @@ export type ModelSettings = {
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
+  AutoRoutingStrategy: string
+  AutoIncludeMerchantGroups: boolean
   'group_ratio_setting.group_special_usable_group': string
   'model_deployment.ionet.api_key': string
   'model_deployment.ionet.enabled': boolean
@@ -305,6 +307,8 @@ export type BillingSettings = {
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
+  AutoRoutingStrategy: string
+  AutoIncludeMerchantGroups: boolean
   'group_ratio_setting.group_special_usable_group': string
   PayAddress: string
   EpayId: string

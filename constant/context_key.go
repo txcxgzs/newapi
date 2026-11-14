@@ -21,6 +21,7 @@ const (
 	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
 	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
 	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
+	ContextKeyTokenRoutingPolicy     ContextKey = "token_routing_policy"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
@@ -51,6 +52,7 @@ const (
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
+	ContextKeyAutoGroupResolved   ContextKey = "auto_group_resolved"
 
 	/* user related keys */
 	ContextKeyUserId      ContextKey = "id"
@@ -95,4 +97,14 @@ const (
 	ContextKeyTokenAuditParams ContextKey = "token_audit_params"
 	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.
 	ContextKeyTokenAuditSucceeded ContextKey = "token_audit_succeeded"
+
+	// Order-Book selected merchant / quote receipt metadata for headers & consume logs.
+	ContextKeySelectedMerchantId       ContextKey = "selected_merchant_id"
+	ContextKeySelectedMerchantName     ContextKey = "selected_merchant_name"
+	ContextKeySelectedMerchantCode     ContextKey = "selected_merchant_code"
+	ContextKeySelectedRoutingStrategy  ContextKey = "selected_routing_strategy"
+	ContextKeySelectedQuoteSource      ContextKey = "selected_quote_source"
+	ContextKeySelectedQuoteInputPrice  ContextKey = "selected_quote_input_price"
+	ContextKeySelectedQuoteOutputPrice ContextKey = "selected_quote_output_price"
+	ContextKeySelectedStreamTps        ContextKey = "selected_stream_tps"
 )

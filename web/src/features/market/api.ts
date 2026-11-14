@@ -19,7 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import type { CandleInterval, MarketCandle, MarketOverview } from './types'
+import type {
+  CandleInterval,
+  MarketCandle,
+  MarketOrderBookResponse,
+  MarketOverview,
+} from './types'
 
 // ----------------------------------------------------------------------------
 // Market APIs（公开行情）
@@ -45,4 +50,19 @@ export async function getMarketKline(
   })
   const payload = requireServerSuccess(res.data)
   return (payload?.data?.candles ?? []) as MarketCandle[]
+}
+
+export async function getMarketOrderBook(params?: {
+  pool?: string
+  model?: string
+  strategy?: string
+}): Promise<MarketOrderBookResponse> {
+  const res = await api.get('/api/market/orderbook', {
+    params: {
+      ...(params?.pool ? { pool: params.pool } : {}),
+      ...(params?.model ? { model: params.model } : {}),
+      ...(params?.strategy ? { strategy: params.strategy } : {}),
+    },
+  })
+  return requireServerSuccess(res.data).data as MarketOrderBookResponse
 }

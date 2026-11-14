@@ -17,15 +17,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, QrCode } from 'lucide-react'
+import {
+  CheckCircle2,
+  ClipboardCheck,
+  ExternalLink,
+  FileSpreadsheet,
+  Layers,
+  QrCode,
+  ReceiptText,
+  RefreshCw,
+  Store,
+  Users,
+  Wallet,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -48,6 +62,7 @@ import { getChannelTypeLabel } from '@/features/channels/lib/channel-utils'
 import { formatCurrencyFromUSD } from '@/lib/currency'
 import { formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
+import { cn } from '@/lib/utils'
 
 import {
   deleteChannelQuote,
@@ -108,34 +123,101 @@ type PriceSyncChoice = (typeof PRICE_SYNC_OPTIONS)[number]['value']
 
 export function MerchantAdmin() {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
+
+  const pendingAppsQuery = useQuery({
+    queryKey: ['merchant-admin', 'pending-apps-count'],
+    queryFn: () => getMerchantApplications(1, 1, 0),
+    staleTime: 30_000,
+  })
+  const pendingWithdrawalsQuery = useQuery({
+    queryKey: ['merchant-admin', 'pending-withdrawals-count'],
+    queryFn: () => getAdminWithdrawals(1, 1, 0),
+    staleTime: 30_000,
+  })
+  const pendingAppsCount = pendingAppsQuery.data?.total ?? 0
+  const pendingWithdrawalsCount = pendingWithdrawalsQuery.data?.total ?? 0
+
   return (
-    <div className='mx-auto w-full max-w-6xl px-4 py-6'>
-      <h1 className='mb-4 text-2xl font-bold'>{t('Merchant Management')}</h1>
-      <Tabs defaultValue='overview'>
-        <TabsList>
-          <TabsTrigger value='overview'>{t('Overview')}</TabsTrigger>
-          <TabsTrigger value='applications'>{t('Applications')}</TabsTrigger>
-          <TabsTrigger value='merchants'>{t('Merchants')}</TabsTrigger>
-          <TabsTrigger value='withdrawals'>{t('Withdrawals')}</TabsTrigger>
-          <TabsTrigger value='quotes'>{t('Quote Board')}</TabsTrigger>
-        </TabsList>
-        <TabsContent value='overview'>
-          <OverviewTab />
-        </TabsContent>
-        <TabsContent value='applications'>
-          <ApplicationsTab />
-        </TabsContent>
-        <TabsContent value='merchants'>
-          <MerchantsTab />
-        </TabsContent>
-        <TabsContent value='withdrawals'>
-          <AdminWithdrawalsTab />
-        </TabsContent>
-        <TabsContent value='quotes'>
-          <QuoteBoardTab />
-        </TabsContent>
-      </Tabs>
-    </div>
+    <SectionPageLayout>
+      <SectionPageLayout.Title>
+        <span className='inline-flex items-center gap-2.5'>
+          <span className='border-primary/20 bg-primary/10 text-primary flex size-9 items-center justify-center rounded-xl border'>
+            <Store className='size-5' />
+          </span>
+          <span>{t('Merchant Management')}</span>
+        </span>
+      </SectionPageLayout.Title>
+      <SectionPageLayout.Actions>
+        <Button
+          size='sm'
+          variant='outline'
+          onClick={() =>
+            queryClient.invalidateQueries({ queryKey: ['merchant-admin'] })
+          }
+        >
+          <RefreshCw className='mr-1.5 size-3.5' />
+          {t('Refresh')}
+        </Button>
+      </SectionPageLayout.Actions>
+      <SectionPageLayout.Content>
+        <Tabs defaultValue='overview' className='space-y-4'>
+          <TabsList className='flex-wrap'>
+            <TabsTrigger value='overview' className='gap-1.5'>
+              <Layers className='size-3.5' />
+              {t('Overview')}
+            </TabsTrigger>
+            <TabsTrigger value='applications' className='gap-1.5'>
+              <ClipboardCheck className='size-3.5' />
+              <span>{t('Applications')}</span>
+              {pendingAppsCount > 0 && (
+                <Badge
+                  variant='destructive'
+                  className='h-4 px-1.5 text-[10px] leading-none'
+                >
+                  {pendingAppsCount}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value='merchants' className='gap-1.5'>
+              <Users className='size-3.5' />
+              {t('Merchant List')}
+            </TabsTrigger>
+            <TabsTrigger value='withdrawals' className='gap-1.5'>
+              <ReceiptText className='size-3.5' />
+              <span>{t('Withdrawals')}</span>
+              {pendingWithdrawalsCount > 0 && (
+                <Badge
+                  variant='destructive'
+                  className='h-4 px-1.5 text-[10px] leading-none'
+                >
+                  {pendingWithdrawalsCount}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value='quotes' className='gap-1.5'>
+              <FileSpreadsheet className='size-3.5' />
+              {t('Quote Board')}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value='overview'>
+            <OverviewTab />
+          </TabsContent>
+          <TabsContent value='applications'>
+            <ApplicationsTab />
+          </TabsContent>
+          <TabsContent value='merchants'>
+            <MerchantsTab />
+          </TabsContent>
+          <TabsContent value='withdrawals'>
+            <AdminWithdrawalsTab />
+          </TabsContent>
+          <TabsContent value='quotes'>
+            <QuoteBoardTab />
+          </TabsContent>
+        </Tabs>
+      </SectionPageLayout.Content>
+    </SectionPageLayout>
   )
 }
 
@@ -148,61 +230,162 @@ function OverviewTab() {
   })
   const merchants = overviewQuery.data?.merchants ?? []
   const pools = overviewQuery.data?.pools ?? []
+  const activeMerchantsCount = merchants.filter((m) => m.status === 1).length
+  const totalWalletBalance = merchants.reduce(
+    (sum, m) => sum + (Number.isFinite(m.balance) ? m.balance : 0),
+    0
+  )
 
   return (
     <div className='space-y-6'>
+      <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
+        <Card className='border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-sm font-medium'>
+              {t('Merchant')}
+            </CardTitle>
+            <Users className='size-4 text-sky-500' />
+          </CardHeader>
+          <CardContent>
+            <div className='text-2xl font-bold tabular-nums'>
+              {merchants.length}
+            </div>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t('Enabled')}: {activeMerchantsCount}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className='border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-sm font-medium'>
+              {t('Enabled')}
+            </CardTitle>
+            <CheckCircle2 className='size-4 text-emerald-500' />
+          </CardHeader>
+          <CardContent>
+            <div className='text-2xl font-bold tabular-nums'>
+              {activeMerchantsCount}
+            </div>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t('Suspended')}: {merchants.length - activeMerchantsCount}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className='border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-sm font-medium'>
+              {t('Group')}
+            </CardTitle>
+            <Layers className='size-4 text-violet-500' />
+          </CardHeader>
+          <CardContent>
+            <div className='text-2xl font-bold tabular-nums'>
+              {pools.length}
+            </div>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t('Channel')}:{' '}
+              {pools.reduce((sum, p) => sum + (p.channel_count ?? 0), 0)}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className='border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-transparent to-transparent'>
+          <CardHeader className='flex flex-row items-center justify-between pb-2'>
+            <CardTitle className='text-muted-foreground text-sm font-medium'>
+              {t('Balance (USD)')}
+            </CardTitle>
+            <Wallet className='size-4 text-amber-500' />
+          </CardHeader>
+          <CardContent>
+            <div className='text-2xl font-bold tabular-nums'>
+              {formatCurrencyFromUSD(totalWalletBalance, {
+                digitsLarge: 2,
+                digitsSmall: 2,
+              })}
+            </div>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t('Merchant Count')}: {merchants.length}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* 分组 → 商家 */}
-      <section>
-        <h3 className='mb-2 text-sm font-medium'>
-          {t('Pool')} → {t('Merchants')}
+      <section className='space-y-2.5'>
+        <h3 className='text-sm font-semibold'>
+          {t('Group')} → {t('Merchant')}
         </h3>
-        <div className='rounded-xl border'>
-          <div className='text-muted-foreground grid grid-cols-[1fr_0.6fr_0.6fr_2fr] gap-2 border-b px-3 py-2 text-xs'>
-            <span>{t('Pool')}</span>
-            <span>{t('Channel')}</span>
-            <span>{t('Merchants')}</span>
-            <span>{t('Merchant')}</span>
-          </div>
-          <div className='divide-y'>
-            {pools.map((p) => (
-              <div
-                key={p.pool}
-                className='grid grid-cols-[1fr_0.6fr_0.6fr_2fr] items-center gap-2 px-3 py-2 text-sm'
-              >
-                <span className='truncate font-mono font-medium'>{p.pool}</span>
-                <span className='font-mono'>{p.channel_count}</span>
-                <span className='font-mono'>{p.merchant_count}</span>
-                <span className='text-muted-foreground truncate'>
-                  {p.merchant_names.length > 0
-                    ? p.merchant_names.join('、')
-                    : '--'}
-                </span>
-              </div>
-            ))}
-            {!pools.length && (
-              <div className='text-muted-foreground px-3 py-8 text-center'>
-                {t('No pools available yet')}
-              </div>
-            )}
+        <div className='overflow-x-auto rounded-xl border'>
+          <div className='min-w-[540px]'>
+            <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1fr_0.6fr_0.6fr_2fr] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+              <span>{t('Group')}</span>
+              <span>{t('Channel')}</span>
+              <span>{t('Merchant Count')}</span>
+              <span>{t('Merchant')}</span>
+            </div>
+            <div className='divide-y'>
+              {pools.map((p) => (
+                <div
+                  key={p.pool}
+                  className='hover:bg-muted/35 grid grid-cols-[1fr_0.6fr_0.6fr_2fr] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+                >
+                  <span className='truncate font-mono font-medium'>{p.pool}</span>
+                  <span className='font-mono tabular-nums'>{p.channel_count}</span>
+                  <span className='font-mono tabular-nums'>{p.merchant_count}</span>
+                  <span className='text-muted-foreground truncate'>
+                    {p.merchant_names.length > 0
+                      ? p.merchant_names.join('、')
+                      : '--'}
+                  </span>
+                </div>
+              ))}
+              {!pools.length && (
+                <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                  <Layers className='text-muted-foreground/50 size-7' />
+                  <span>{t('No pools available yet')}</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </section>
 
       {/* 商家 → 渠道 */}
-      <section>
-        <h3 className='mb-2 text-sm font-medium'>
-          {t('Merchants')} → {t('Channel')}
+      <section className='space-y-2.5'>
+        <h3 className='text-sm font-semibold'>
+          {t('Merchant')} → {t('Channel')}
         </h3>
-        <div className='space-y-3'>
+        <div className='grid gap-3 md:grid-cols-2'>
           {merchants.map((m) => (
-            <div key={m.user_id} className='rounded-xl border p-3'>
-              <div className='flex flex-wrap items-center gap-2'>
-                <span className='text-sm font-medium'>
-                  {m.shop_name || m.site_name || m.username}
-                </span>
-                <span className='text-muted-foreground text-xs'>
-                  @{m.username}
-                </span>
+            <Card key={m.user_id} className='overflow-hidden'>
+              <CardContent className='space-y-3 py-4'>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <div className='bg-primary/10 text-primary flex size-7 shrink-0 items-center justify-center rounded-lg'>
+                    <Store className='size-3.5' />
+                  </div>
+                  <span className='text-sm font-semibold'>
+                    {m.shop_name || m.site_name || m.username}
+                  </span>
+                  <span className='text-muted-foreground text-xs'>
+                    @{m.username}
+                  </span>
+                  <Badge
+                    variant={m.status === 1 ? 'default' : 'destructive'}
+                  >
+                    {m.status === 1 ? t('Enabled') : t('Suspended')}
+                  </Badge>
+                  <span className='text-muted-foreground ml-auto text-xs'>
+                    {t('Balance (USD)')}:{' '}
+                    <span className='text-foreground font-mono font-semibold tabular-nums'>
+                      {formatCurrencyFromUSD(m.balance, {
+                        digitsLarge: 2,
+                        digitsSmall: 2,
+                      })}
+                    </span>
+                  </span>
+                </div>
                 {m.platform_url && (
                   <a
                     href={m.platform_url}
@@ -214,58 +397,46 @@ function OverviewTab() {
                     {m.platform_url}
                   </a>
                 )}
-                <Badge
-                  variant={m.status === 1 ? 'default' : 'destructive'}
-                >
-                  {m.status === 1 ? t('Enabled') : t('Suspended')}
-                </Badge>
-                <span className='text-muted-foreground ml-auto text-xs'>
-                  {t('Balance (USD)')}:{' '}
-                  <span className='text-foreground font-mono'>
-                    {formatCurrencyFromUSD(m.balance, {
-                      digitsLarge: 2,
-                      digitsSmall: 2,
-                    })}
-                  </span>
-                </span>
-              </div>
-              <div className='mt-2 space-y-1.5'>
-                {m.channels.map((ch) => (
-                  <div
-                    key={ch.id}
-                    className='flex flex-wrap items-center gap-2 text-xs'
-                  >
-                    <span className='font-mono'>#{ch.id}</span>
-                    <span>{ch.name}</span>
-                    {ch.pools.map((pool) => (
-                      <Badge key={pool} variant='secondary'>
-                        {pool}
-                      </Badge>
-                    ))}
-                    <span className='text-muted-foreground'>
-                      {t('Model count')}: {ch.model_count}
-                    </span>
-                    {ch.price_sync && (
-                      <Badge variant='outline'>{t('Price sync on')}</Badge>
-                    )}
-                    <Badge
-                      variant={ch.status === 1 ? 'secondary' : 'destructive'}
+                <div className='space-y-1.5 border-t pt-2.5'>
+                  {m.channels.map((ch) => (
+                    <div
+                      key={ch.id}
+                      className='bg-muted/30 flex flex-wrap items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs'
                     >
-                      {ch.status === 1 ? t('Enabled') : t('Disabled')}
-                    </Badge>
-                  </div>
-                ))}
-                {!m.channels.length && (
-                  <p className='text-muted-foreground text-xs'>
-                    {t('No channels in this pool yet')}
-                  </p>
-                )}
-              </div>
-            </div>
+                      <span className='font-mono font-medium'>#{ch.id}</span>
+                      <span className='font-medium'>{ch.name}</span>
+                      {ch.pools.map((pool) => (
+                        <Badge key={pool} variant='secondary'>
+                          {pool}
+                        </Badge>
+                      ))}
+                      <span className='text-muted-foreground'>
+                        {t('Model count')}: {ch.model_count}
+                      </span>
+                      {ch.price_sync && (
+                        <Badge variant='outline'>{t('Price sync on')}</Badge>
+                      )}
+                      <Badge
+                        variant={ch.status === 1 ? 'secondary' : 'destructive'}
+                        className='ml-auto'
+                      >
+                        {ch.status === 1 ? t('Enabled') : t('Disabled')}
+                      </Badge>
+                    </div>
+                  ))}
+                  {!m.channels.length && (
+                    <p className='text-muted-foreground text-xs'>
+                      {t('No channels in this pool yet')}
+                    </p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           ))}
           {!merchants.length && (
-            <div className='text-muted-foreground rounded-xl border px-3 py-8 text-center'>
-              {t('No merchants yet')}
+            <div className='text-muted-foreground col-span-full flex flex-col items-center gap-2 rounded-xl border px-3 py-10 text-center text-sm'>
+              <Store className='text-muted-foreground/50 size-7' />
+              <span>{t('No merchants yet')}</span>
             </div>
           )}
         </div>
@@ -306,6 +477,7 @@ function ApplicationsTab() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
+  const [statusFilter, setStatusFilter] = useState<number>(-1)
   const [reviewing, setReviewing] = useState<MerchantApplication | null>(null)
   const [pools, setPools] = useState('default')
   const [groupName, setGroupName] = useState('')
@@ -325,8 +497,8 @@ function ApplicationsTab() {
   )
 
   const appsQuery = useQuery({
-    queryKey: ['merchant-admin', 'applications', page],
-    queryFn: () => getMerchantApplications(page, PAGE_SIZE, -1),
+    queryKey: ['merchant-admin', 'applications', page, statusFilter],
+    queryFn: () => getMerchantApplications(page, PAGE_SIZE, statusFilter),
   })
   const items = appsQuery.data?.items ?? []
 
@@ -458,6 +630,34 @@ function ApplicationsTab() {
 
   return (
     <div className='space-y-3'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <div className='bg-muted/30 inline-flex items-center rounded-lg border p-0.5 text-xs'>
+          {[
+            { value: -1, label: t('All') },
+            { value: 0, label: t('Pending Review') },
+            { value: 1, label: t('Approved') },
+            { value: 2, label: t('Rejected') },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              type='button'
+              onClick={() => {
+                setStatusFilter(opt.value)
+                setPage(1)
+              }}
+              className={cn(
+                'rounded-md px-2.5 py-1 transition-colors',
+                statusFilter === opt.value
+                  ? 'bg-background text-foreground font-medium shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {lastReview && (
         <Alert>
           <AlertTitle>{t('Last review result')}</AlertTitle>
@@ -485,16 +685,17 @@ function ApplicationsTab() {
         </Alert>
       )}
 
-      <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Site')}</span>
-          <span>{t('类型 / 分组与倍率')}</span>
-          <span>{t('Applicant')}</span>
-          <span>{t('Time')}</span>
-          <span>{t('Status')}</span>
-          <span className='w-32 text-right'>{t('Actions')}</span>
-        </div>
-        <div className='divide-y'>
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[740px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Site')}</span>
+            <span>{t('类型 / 分组与倍率')}</span>
+            <span>{t('Applicant')}</span>
+            <span>{t('Time')}</span>
+            <span>{t('Status')}</span>
+            <span className='w-32 text-right'>{t('Actions')}</span>
+          </div>
+          <div className='divide-y'>
           {items.map((a) => {
             const isGroupChangeApp = a.app_type === 'group_change'
             const isProfileChangeApp = a.app_type === 'profile_change'
@@ -514,7 +715,7 @@ function ApplicationsTab() {
             return (
               <div
                 key={a.id}
-                className='grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] items-center gap-2 px-3 py-2 text-sm'
+                className='hover:bg-muted/35 grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
               >
                 <div className='min-w-0'>
                   <span className='block truncate font-medium'>
@@ -616,11 +817,13 @@ function ApplicationsTab() {
               </div>
             )
           })}
-          {!items.length && (
-            <div className='text-muted-foreground px-3 py-8 text-center'>
-              {t('No applications yet')}
-            </div>
-          )}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <ClipboardCheck className='text-muted-foreground/50 size-7' />
+                <span>{t('No applications yet')}</span>
+              </div>
+            )}
+          </div>
         </div>
         {(appsQuery.data?.total ?? 0) > page * PAGE_SIZE && (
           <div className='border-t p-2 text-center'>
@@ -1051,20 +1254,21 @@ function MerchantsTab() {
 
   return (
     <div className='space-y-3'>
-      <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1.2fr_1fr_1.3fr_1.1fr_auto] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Site / Code')}</span>
-          <span>{t('Contact / Username')}</span>
-          <span>{t('Wallet (Avail / T+N / Frozen)')}</span>
-          <span>{t('Terms')}</span>
-          <span className='w-36 text-right'>{t('Actions')}</span>
-        </div>
-        <div className='divide-y'>
-          {items.map((m) => (
-            <div
-              key={m.id}
-              className='grid grid-cols-[1.2fr_1fr_1.3fr_1.1fr_auto] items-center gap-2 px-3 py-2 text-sm'
-            >
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[700px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1.2fr_1fr_1.3fr_1.1fr_auto] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Site / Code')}</span>
+            <span>{t('Contact / Username')}</span>
+            <span>{t('Wallet (Avail / T+N / Frozen)')}</span>
+            <span>{t('Terms')}</span>
+            <span className='w-36 text-right'>{t('Actions')}</span>
+          </div>
+          <div className='divide-y'>
+            {items.map((m) => (
+              <div
+                key={m.id}
+                className='hover:bg-muted/35 grid grid-cols-[1.2fr_1fr_1.3fr_1.1fr_auto] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+              >
               <div className='min-w-0'>
                 <a
                   href={m.site_url}
@@ -1149,11 +1353,13 @@ function MerchantsTab() {
               </span>
             </div>
           ))}
-          {!items.length && (
-            <div className='text-muted-foreground px-3 py-8 text-center'>
-              {t('No merchants yet')}
-            </div>
-          )}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <Users className='text-muted-foreground/50 size-7' />
+                <span>{t('No merchants yet')}</span>
+              </div>
+            )}
+          </div>
         </div>
         {(merchantsQuery.data?.total ?? 0) > page * PAGE_SIZE && (
           <div className='border-t p-2 text-center'>
@@ -1268,12 +1474,13 @@ function AdminWithdrawalsTab() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
+  const [statusFilter, setStatusFilter] = useState<number>(-1)
   const [proof, setProof] = useState('')
   const [qrModal, setQrModal] = useState<MerchantWithdrawal | null>(null)
 
   const withdrawalsQuery = useQuery({
-    queryKey: ['merchant-admin', 'withdrawals', page],
-    queryFn: () => getAdminWithdrawals(page, PAGE_SIZE, -1),
+    queryKey: ['merchant-admin', 'withdrawals', page, statusFilter],
+    queryFn: () => getAdminWithdrawals(page, PAGE_SIZE, statusFilter),
   })
   const items = withdrawalsQuery.data?.items ?? []
 
@@ -1300,34 +1507,67 @@ function AdminWithdrawalsTab() {
   }
 
   return (
-    <div className='rounded-xl border'>
-      <div className='border-b px-3 py-2'>
-        <Label
-          htmlFor='merchant-withdrawal-proof'
-          className='mb-1 block text-xs'
-        >
-          {t('Payment proof (for mark-as-paid)')}
-        </Label>
-        <Input
-          id='merchant-withdrawal-proof'
-          value={proof}
-          onChange={(e) => setProof(e.target.value)}
-          placeholder={t('Transaction ID / screenshot link')}
-        />
-      </div>
-      <div className='text-muted-foreground grid grid-cols-[1fr_1.2fr_0.9fr_0.8fr_auto] gap-2 border-b px-3 py-2 text-xs'>
-        <span>{t('Time')}</span>
-        <span>{t('Shop / Account')}</span>
-        <span>{t('Amount (USD)')}</span>
-        <span>{t('Status')}</span>
-        <span className='w-52 text-right'>{t('Actions')}</span>
-      </div>
-      <div className='divide-y'>
-        {items.map((w: MerchantWithdrawal) => (
-          <div
-            key={w.id}
-            className='grid grid-cols-[1fr_1.2fr_0.9fr_0.8fr_auto] items-center gap-2 px-3 py-2 text-sm'
-          >
+    <div className='space-y-3'>
+      <Card className='bg-muted/20'>
+        <CardContent className='flex flex-wrap items-center justify-between gap-3 py-3'>
+          <div className='bg-background inline-flex items-center rounded-lg border p-0.5 text-xs'>
+            {[
+              { value: -1, label: t('All') },
+              { value: 0, label: t('Pending') },
+              { value: 1, label: t('Approved') },
+              { value: 2, label: t('Paid') },
+              { value: 3, label: t('Rejected') },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                type='button'
+                onClick={() => {
+                  setStatusFilter(opt.value)
+                  setPage(1)
+                }}
+                className={cn(
+                  'rounded-md px-2.5 py-1 transition-colors',
+                  statusFilter === opt.value
+                    ? 'bg-primary text-primary-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className='flex flex-1 flex-wrap items-center justify-end gap-2'>
+            <Label
+              htmlFor='merchant-withdrawal-proof'
+              className='text-xs font-medium whitespace-nowrap'
+            >
+              {t('Payment proof (for mark-as-paid)')}
+            </Label>
+            <Input
+              id='merchant-withdrawal-proof'
+              value={proof}
+              onChange={(e) => setProof(e.target.value)}
+              placeholder={t('Transaction ID / screenshot link')}
+              className='max-w-sm bg-background'
+            />
+          </div>
+        </CardContent>
+      </Card>
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='min-w-[680px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1fr_1.2fr_0.9fr_0.8fr_auto] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Time')}</span>
+            <span>{t('Shop / Account')}</span>
+            <span>{t('Amount (USD)')}</span>
+            <span>{t('Status')}</span>
+            <span className='w-52 text-right'>{t('Actions')}</span>
+          </div>
+          <div className='divide-y'>
+            {items.map((w: MerchantWithdrawal) => (
+              <div
+                key={w.id}
+                className='hover:bg-muted/35 grid grid-cols-[1fr_1.2fr_0.9fr_0.8fr_auto] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+              >
             <span className='text-muted-foreground'>
               {formatTimestampToDate(w.created_at)}
               {w.trade_no && (
@@ -1398,19 +1638,22 @@ function AdminWithdrawalsTab() {
             </span>
           </div>
         ))}
-        {!items.length && (
-          <div className='text-muted-foreground px-3 py-8 text-center'>
-            {t('No withdrawals yet')}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <ReceiptText className='text-muted-foreground/50 size-7' />
+                <span>{t('No withdrawals yet')}</span>
+              </div>
+            )}
+          </div>
+        </div>
+        {(withdrawalsQuery.data?.total ?? 0) > page * PAGE_SIZE && (
+          <div className='border-t p-2 text-center'>
+            <Button variant='outline' size='sm' onClick={() => setPage(page + 1)}>
+              {t('Load more')}
+            </Button>
           </div>
         )}
       </div>
-      {(withdrawalsQuery.data?.total ?? 0) > page * PAGE_SIZE && (
-        <div className='border-t p-2 text-center'>
-          <Button variant='outline' size='sm' onClick={() => setPage(page + 1)}>
-            {t('Load more')}
-          </Button>
-        </div>
-      )}
 
       <Dialog open={Boolean(qrModal)} onOpenChange={(o) => !o && setQrModal(null)}>
         <DialogContent className='max-w-sm'>
@@ -1494,33 +1737,34 @@ function QuoteBoardTab() {
   }
 
   return (
-    <div className='rounded-xl border'>
-      <div className='flex items-center justify-between gap-2 border-b px-3 py-2'>
-        <p className='text-sm font-medium'>{t('Quote Board')}</p>
-        <div className='flex gap-2'>
-          <Button size='sm' variant='outline' onClick={() => setCreating(true)}>
-            {t('New Quote')}
-          </Button>
-          <Button size='sm' variant='outline' onClick={sync} disabled={syncing}>
-            {t('Sync now')}
-          </Button>
+      <div className='overflow-x-auto rounded-xl border'>
+        <div className='bg-muted/20 flex items-center justify-between gap-2 border-b px-4 py-2.5'>
+          <p className='text-sm font-medium'>{t('Quote Board')}</p>
+          <div className='flex gap-2'>
+            <Button size='sm' variant='outline' onClick={() => setCreating(true)}>
+              {t('New Quote')}
+            </Button>
+            <Button size='sm' variant='outline' onClick={sync} disabled={syncing}>
+              {t('Sync now')}
+            </Button>
+          </div>
         </div>
-      </div>
-      <div className='text-muted-foreground grid grid-cols-[1fr_1fr_auto_1fr_1fr_auto_auto] gap-2 border-b px-3 py-2 text-xs'>
-        <span>{t('Pool Group')}</span>
-        <span>{t('Model')}</span>
-        <span>{t('Channel')}</span>
-        <span>{t('Input $/1M')}</span>
-        <span>{t('Output $/1M')}</span>
-        <span>{t('Source')}</span>
-        <span className='w-28 text-right'>{t('Actions')}</span>
-      </div>
-      <div className='divide-y'>
-        {items.map((q) => (
-          <div
-            key={q.id}
-            className='grid grid-cols-[1fr_1fr_auto_1fr_1fr_auto_auto] items-center gap-2 px-3 py-2 text-sm'
-          >
+        <div className='min-w-[700px]'>
+          <div className='bg-muted/40 text-muted-foreground grid grid-cols-[1fr_1fr_auto_1fr_1fr_auto_auto] gap-2 border-b px-4 py-2.5 text-xs font-medium'>
+            <span>{t('Pool Group')}</span>
+            <span>{t('Model')}</span>
+            <span>{t('Channel')}</span>
+            <span>{t('Input $/1M')}</span>
+            <span>{t('Output $/1M')}</span>
+            <span>{t('Source')}</span>
+            <span className='w-28 text-right'>{t('Actions')}</span>
+          </div>
+          <div className='divide-y'>
+            {items.map((q) => (
+              <div
+                key={q.id}
+                className='hover:bg-muted/35 grid grid-cols-[1fr_1fr_auto_1fr_1fr_auto_auto] items-center gap-2 px-4 py-2.5 text-sm transition-colors'
+              >
             <span className='truncate font-mono'>{q.pool_group}</span>
             <span className='truncate font-mono'>{q.model_name}</span>
             <span className='font-mono'>#{q.channel_id}</span>
@@ -1557,13 +1801,15 @@ function QuoteBoardTab() {
             </span>
           </div>
         ))}
-        {!items.length && (
-          <div className='text-muted-foreground px-3 py-8 text-center'>
-            {t('No quotes yet')}
+            {!items.length && (
+              <div className='text-muted-foreground flex flex-col items-center gap-2 px-3 py-10 text-center text-sm'>
+                <FileSpreadsheet className='text-muted-foreground/50 size-7' />
+                <span>{t('No quotes yet')}</span>
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {(quotesQuery.data?.total ?? 0) > page * PAGE_SIZE && (
+        </div>
+        {(quotesQuery.data?.total ?? 0) > page * PAGE_SIZE && (
         <div className='border-t p-2 text-center'>
           <Button variant='outline' size='sm' onClick={() => setPage(page + 1)}>
             {t('Load more')}

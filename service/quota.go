@@ -184,7 +184,11 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
 
 	tokenName := ctx.GetString("token_name")
-	completionRatio := decimal.NewFromFloat(ratio_setting.GetCompletionRatio(modelName))
+	compRatioVal := relayInfo.PriceData.CompletionRatio
+	if compRatioVal <= 0 {
+		compRatioVal = ratio_setting.GetCompletionRatio(modelName)
+	}
+	completionRatio := decimal.NewFromFloat(compRatioVal)
 	audioRatio := decimal.NewFromFloat(ratio_setting.GetAudioRatio(relayInfo.OriginModelName))
 	audioCompletionRatio := decimal.NewFromFloat(ratio_setting.GetAudioCompletionRatio(modelName))
 
@@ -326,7 +330,11 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 
 	tokenName := ctx.GetString("token_name")
 	billingModelName := relayInfo.GetBillingModelName()
-	completionRatio := decimal.NewFromFloat(ratio_setting.GetCompletionRatio(billingModelName))
+	compRatioVal := relayInfo.PriceData.CompletionRatio
+	if compRatioVal <= 0 {
+		compRatioVal = ratio_setting.GetCompletionRatio(billingModelName)
+	}
+	completionRatio := decimal.NewFromFloat(compRatioVal)
 	audioRatio := decimal.NewFromFloat(ratio_setting.GetAudioRatio(billingModelName))
 	audioCompletionRatio := decimal.NewFromFloat(ratio_setting.GetAudioCompletionRatio(billingModelName))
 

@@ -59,6 +59,8 @@ const defaultBillingSettings: BillingSettings = {
   AutoGroups: '',
   MaxTokenAutoGroups: 5,
   DefaultUseAutoGroup: false,
+  AutoRoutingStrategy: 'order',
+  AutoIncludeMerchantGroups: false,
   'group_ratio_setting.group_special_usable_group': '{}',
   PayAddress: '',
   EpayId: '',
