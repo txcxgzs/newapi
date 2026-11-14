@@ -276,6 +276,13 @@ func SetApiRouter(router *gin.Engine) {
 			channelQuoteRoute.DELETE("/:id", controller.DeleteChannelQuote)
 			channelQuoteRoute.POST("/sync", controller.SyncChannelQuotes)
 		}
+		// System Self-Update (Custom Branch / Release)
+		systemUpdateRoute := apiRouter.Group("/system_update")
+		systemUpdateRoute.Use(middleware.RootAuth())
+		{
+			systemUpdateRoute.GET("/status", controller.GetSelfUpdateStatus)
+			systemUpdateRoute.POST("/apply", controller.ApplySelfUpdate)
+		}
 		// New API Pro：商家入驻（登录用户）与商家门户（商家角色，数据隔离）
 		merchantRoute := apiRouter.Group("/merchant")
 		merchantRoute.Use(middleware.UserAuth())

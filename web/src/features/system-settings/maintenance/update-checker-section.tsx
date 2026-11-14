@@ -23,6 +23,7 @@ import { useStatus } from '@/hooks/use-status'
 import { formatTimestamp } from '@/lib/format'
 
 import { SettingsSection } from '../components/settings-section'
+import { SelfUpdateCard } from './self-update-card'
 
 type UpdateCheckerSectionProps = {
   currentVersion?: string | null
@@ -55,6 +56,7 @@ export function UpdateCheckerSection(props: UpdateCheckerSectionProps) {
           </div>
         </div>
         <SystemUpdateAction compact={false} />
+        <SelfUpdateCard />
       </div>
     </SettingsSection>
   )

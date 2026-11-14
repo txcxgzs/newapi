@@ -214,6 +214,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/system-info/sync":                    accessTokenScopeRule("ops:read"),
 	"DELETE /api/system-info/stale-instances":      accessTokenScopeRule("ops:write"),
 	"DELETE /api/system-info/instances/:node_name": accessTokenScopeRule("ops:write"),
+	"GET /api/system_update/status":                accessTokenScopeRule("ops:read"),
+	"POST /api/system_update/apply":                accessTokenSessionRule,
 
 	// router/api-router.go: /api/plugin/task
 	"GET /api/plugin/task":                           accessTokenScopeRule("plugin:read"),
