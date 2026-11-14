@@ -36,6 +36,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { handleServerError } from '@/lib/handle-server-error'
+import { useAuthStore } from '@/stores/auth-store'
 
 import {
   getPlatformModels,
@@ -45,7 +46,11 @@ import {
 import {
   MerchantModelMappingEditor,
 } from './components/model-mapping-editor'
-import { buildModelQuotesFromMapping } from './lib/model-mapping'
+import {
+  buildModelQuotesFromMapping,
+  type CustomModelPriceDraft,
+  validateCustomModelQuotes,
+} from './lib/model-mapping'
 import type { MerchantModelQuote, MerchantUpstreamProbeResult } from './types'
 import {
   UPSTREAM_KIND_AUTO,
@@ -116,9 +121,13 @@ export function MerchantApplyForm({
   const [probing, setProbing] = useState(false)
   const [probeResult, setProbeResult] =
     useState<MerchantUpstreamProbeResult | null>(null)
-  // 模型对接：上游模型名 → 平台官方模型名；缺省（未动过）时同名自动对接
+  // 模型对接：上游模型名 → 平台官方或 m{ID}/... 专属模型名；缺省时同名/近名自动对接
+  const merchantUserId = useAuthStore((state) => state.auth.user?.id)
   const [upstreamModels, setUpstreamModels] = useState<string[]>([])
   const [mapping, setMapping] = useState<Record<string, string>>({})
+  const [customPrices, setCustomPrices] = useState<
+    Record<string, CustomModelPriceDraft>
+  >({})
   // 手动清单兜底：拉取失败或上游没有 /v1/models 时展开使用
   const [manualModels, setManualModels] = useState('')
   const [showManualModels, setShowManualModels] = useState(false)
@@ -137,9 +146,9 @@ export function MerchantApplyForm({
   /** 站址/密钥/上游类型变化后，旧检测结果即失效。 */
   function invalidateProbe() {
     setProbeResult(null)
-    setFallbackRate('')
     setUpstreamModels([])
     setMapping({})
+    setCustomPrices({})
   }
 
   async function runProbe() {
@@ -151,6 +160,7 @@ export function MerchantApplyForm({
     setProbeResult(null)
     setUpstreamModels([])
     setMapping({})
+    setCustomPrices({})
     try {
       const result = await probeMerchantUpstream({
         site_url: siteUrl.trim(),
@@ -177,7 +187,9 @@ export function MerchantApplyForm({
     const mapped = buildModelQuotesFromMapping(
       upstreamModels,
       mapping,
-      platformModels
+      platformModels,
+      customPrices,
+      merchantUserId
     )
     if (mapped.length > 0) {
       return { models: mapped, invalidLine: null }
@@ -188,6 +200,17 @@ export function MerchantApplyForm({
   async function submit() {
     if (!siteName || !siteUrl || !siteKey) {
       toast.error(t('Please fill in Site Name, Site URL and API Key'))
+      return
+    }
+    const customErr = validateCustomModelQuotes(
+      upstreamModels,
+      mapping,
+      platformModels,
+      customPrices,
+      merchantUserId
+    )
+    if (customErr) {
+      toast.error(t(customErr))
       return
     }
     const parsed = buildModelQuotes()
@@ -278,11 +301,20 @@ export function MerchantApplyForm({
               id='merchant-group-name'
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
-              placeholder='my-shop-vip'
+              placeholder='例如 特惠通道 或 vip01'
             />
             <p className='text-muted-foreground text-xs'>
               {t(
-                '仅限字母、数字、连字符（-）与下划线（_），不可使用 default/vip/svip/auto 等系统保留分组；留空则由管理员审核时分配。'
+                '支持中文、字母、数字、连字符（-）与下划线（_），不可使用 default/vip/svip/auto 等系统保留词；提交时会自动加上「商户名-」前缀。'
+              )}
+              {groupName.trim() && siteName.trim() && (
+                <span className='text-foreground ml-1 font-mono'>
+                  {t('最终分组名：{{name}}', {
+                    name: groupName.trim().startsWith(`${siteName.trim()}-`)
+                      ? groupName.trim()
+                      : `${siteName.trim()}-${groupName.trim()}`,
+                  })}
+                </span>
               )}
             </p>
           </div>
@@ -475,6 +507,10 @@ export function MerchantApplyForm({
             platformModels={platformModels}
             value={mapping}
             onChange={setMapping}
+            merchantUserId={merchantUserId}
+            groupRatio={Number(groupRate) > 0 ? Number(groupRate) : 1}
+            customPrices={customPrices}
+            onCustomPricesChange={setCustomPrices}
             onRemove={(upstream) => {
               setUpstreamModels((prev) => prev.filter((n) => n !== upstream))
               setMapping((prev) => {

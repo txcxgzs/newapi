@@ -23,10 +23,17 @@ For commercial licensing, please contact support@quantumnous.com
  * `model` 是平台官方模型名（用户请求的名字）；`upstream` 是上游实际模型名，
  * 两者不同时审核通过会写入渠道的 model_mapping。计价走倍率制，商家不填价格。
  */
+export interface MerchantCustomModelPrice {
+  input_price: number
+  output_price: number
+}
+
 export interface MerchantModelQuote {
   model: string
   pool?: string
   upstream?: string
+  input_price?: number
+  output_price?: number
 }
 
 /**
@@ -330,6 +337,8 @@ export interface MerchantPortalPools {
   groups: MerchantPoolGroup[]
   pool_meta?: Record<string, MerchantPoolMeta>
   pending_application?: MerchantApplication | null
+  merchant_user_id?: number
+  custom_model_prices?: Record<string, MerchantCustomModelPrice>
 }
 
 export interface MerchantRow extends MerchantProfile {

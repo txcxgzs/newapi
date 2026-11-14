@@ -324,25 +324,45 @@ func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
 		assert.Zero(t, apps)
 	})
 
-	// 1. 商家提交带专属分组与加入 auto 路由意向的入驻申请
+	// 1. 商家提交带专属分组（自动加商户名前缀）、自定义模型定价与加入 auto 路由意向的入驻申请
 	applyRecorder := httptest.NewRecorder()
 	applyCtx, _ := gin.CreateTestContext(applyRecorder)
 	applyCtx.Set("id", 201)
 	applyCtx.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/apply", strings.NewReader(
-		`{"site_name":"Alpha","site_url":"`+upstream.URL+`","site_key":"sk-alpha","group_name":"alpha-vip","group_desc":"Alpha VIP Pool","rate_multiplier":0.5,"join_auto_group":true,"models":[{"model":"gpt-5.6"}]}`))
+		`{"site_name":"Alpha","site_url":"`+upstream.URL+`","site_key":"sk-alpha","group_name":"特惠通道","group_desc":"Alpha VIP Pool","rate_multiplier":0.5,"join_auto_group":true,"models":[{"model":"gpt-5.6"},{"model":"m201/星辰专属","upstream":"gpt-5.6","input_price":4,"output_price":12}]}`))
 	applyCtx.Request.Header.Set("Content-Type", "application/json")
 	PostMerchantApplication(applyCtx)
 	require.Equal(t, http.StatusOK, applyRecorder.Code, applyRecorder.Body.String())
 
+	const prefixedGroup = "Alpha-特惠通道"
+
 	var app model.MerchantApplication
 	require.NoError(t, db.Where("user_id = ? AND status = ?", 201, model.MerchantApplicationPending).First(&app).Error)
 	assert.Equal(t, model.MerchantAppTypeChannel, app.AppType)
-	assert.Equal(t, "alpha-vip", app.GroupName)
+	assert.Equal(t, prefixedGroup, app.GroupName)
 	assert.Equal(t, "Alpha VIP Pool", app.GroupDesc)
 	assert.True(t, app.JoinAutoGroup)
 
-	// 2. 管理员审核通过：应同步原生 GroupRatio / UserUsableGroups / AutoGroups 并按分组倍率派生盘口
-	reviewRecorder := performReviewRequest(t, app.Id, `{"action":"approve","review_note":"ok","pools":["alpha-vip"],"group_name":"alpha-vip","group_desc":"Alpha VIP Pool","join_auto_group":true,"rate_multiplier":0.5,"profit_ratio":0.95}`)
+	// 1b. 其他商家不能重名申请相同 site_name
+	require.NoError(t, db.Create(&model.User{
+		Id:       202,
+		Username: "merchant_beta_202",
+		AffCode:  "AFF202",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}).Error)
+	dupRecorder := httptest.NewRecorder()
+	dupCtx, _ := gin.CreateTestContext(dupRecorder)
+	dupCtx.Set("id", 202)
+	dupCtx.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/apply", strings.NewReader(
+		`{"site_name":"Alpha","site_url":"`+upstream.URL+`","site_key":"sk-beta","group_name":"vip02","rate_multiplier":0.5,"models":[{"model":"gpt-5.6"}]}`))
+	dupCtx.Request.Header.Set("Content-Type", "application/json")
+	PostMerchantApplication(dupCtx)
+	assert.Equal(t, http.StatusBadRequest, dupRecorder.Code)
+	assert.Contains(t, dupRecorder.Body.String(), "被其他商家")
+
+	// 2. 管理员审核通过：应同步原生 GroupRatio / UserUsableGroups / AutoGroups / 自定义模型定价并按分组倍率派生盘口
+	reviewRecorder := performReviewRequest(t, app.Id, `{"action":"approve","review_note":"ok","pools":["`+prefixedGroup+`"],"group_name":"`+prefixedGroup+`","group_desc":"Alpha VIP Pool","join_auto_group":true,"rate_multiplier":0.5,"profit_ratio":0.95}`)
 	require.Equal(t, http.StatusOK, reviewRecorder.Code, reviewRecorder.Body.String())
 
 	var reviewResp struct {
@@ -357,37 +377,80 @@ func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
 	require.NoError(t, json.Unmarshal(reviewRecorder.Body.Bytes(), &reviewResp))
 	assert.True(t, reviewResp.Success, reviewRecorder.Body.String())
 
-	assert.True(t, ratio_setting.ContainsGroupRatio("alpha-vip"))
-	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio("alpha-vip"), 1e-9)
-	assert.Equal(t, "Alpha VIP Pool", setting.GetUserUsableGroupsCopy()["alpha-vip"])
-	assert.True(t, setting.ContainsAutoGroup("alpha-vip"))
+	assert.True(t, ratio_setting.ContainsGroupRatio(prefixedGroup))
+	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio(prefixedGroup), 1e-9)
+	assert.Equal(t, "Alpha VIP Pool", setting.GetUserUsableGroupsCopy()[prefixedGroup])
+	assert.True(t, setting.ContainsAutoGroup(prefixedGroup))
 
 	var channel model.Channel
 	require.NoError(t, db.First(&channel, reviewResp.Data.ChannelId).Error)
-	assert.Equal(t, "alpha-vip", channel.Group)
+	assert.Equal(t, prefixedGroup, channel.Group)
+	require.NotNil(t, channel.ModelMapping)
+	assert.Contains(t, *channel.ModelMapping, `"m201/星辰专属":"gpt-5.6"`)
+
+	assert.InDelta(t, 2.0, ratio_setting.GetModelRatioCopy()["m201/星辰专属"], 1e-9)
+	assert.InDelta(t, 3.0, ratio_setting.GetCompletionRatioCopy()["m201/星辰专属"], 1e-9)
 
 	var quote model.ChannelQuote
-	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, "alpha-vip", "gpt-5.6").First(&quote).Error)
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, prefixedGroup, "gpt-5.6").First(&quote).Error)
 	assert.InDelta(t, 1.25, quote.RateMultiplier, 1e-9)
 	assert.InDelta(t, 2.5, quote.InputPrice, 1e-9)
 	assert.InDelta(t, 10.0, quote.OutputPrice, 1e-9)
+
+	var customQuote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, prefixedGroup, "m201/星辰专属").First(&customQuote).Error)
+	assert.InDelta(t, 2.0, customQuote.InputPrice, 1e-9)
+	assert.InDelta(t, 6.0, customQuote.OutputPrice, 1e-9)
+
+	// 2b. 商家在渠道编辑中可直接修改自己 m{ID}/... 自定义模型定价，但不能篡改平台模型或其他商家模型定价
+	forbidRecorder := httptest.NewRecorder()
+	forbidCtx, _ := gin.CreateTestContext(forbidRecorder)
+	forbidCtx.Set("id", 201)
+	forbidCtx.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/channel/update", strings.NewReader(fmt.Sprintf(
+		`{"channel_id":%d,"models":[{"model":"gpt-5.6","input_price":1,"output_price":2}]}`, channel.Id)))
+	forbidCtx.Request.Header.Set("Content-Type", "application/json")
+	UpdateMerchantChannel(forbidCtx)
+	assert.Equal(t, http.StatusBadRequest, forbidRecorder.Code)
+
+	hijackRecorder := httptest.NewRecorder()
+	hijackCtx, _ := gin.CreateTestContext(hijackRecorder)
+	hijackCtx.Set("id", 201)
+	hijackCtx.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/channel/update", strings.NewReader(fmt.Sprintf(
+		`{"channel_id":%d,"models":[{"model":"m999/hijack","input_price":1,"output_price":2}]}`, channel.Id)))
+	hijackCtx.Request.Header.Set("Content-Type", "application/json")
+	UpdateMerchantChannel(hijackCtx)
+	assert.Equal(t, http.StatusBadRequest, hijackRecorder.Code)
+
+	repriceRecorder := httptest.NewRecorder()
+	repriceCtx, _ := gin.CreateTestContext(repriceRecorder)
+	repriceCtx.Set("id", 201)
+	repriceCtx.Request = httptest.NewRequest(http.MethodPost, "/api/merchant/channel/update", strings.NewReader(fmt.Sprintf(
+		`{"channel_id":%d,"models":[{"model":"gpt-5.6"},{"model":"m201/星辰专属","upstream":"gpt-5.6","input_price":6,"output_price":18}]}`, channel.Id)))
+	repriceCtx.Request.Header.Set("Content-Type", "application/json")
+	UpdateMerchantChannel(repriceCtx)
+	require.Equal(t, http.StatusOK, repriceRecorder.Code, repriceRecorder.Body.String())
+
+	var repricedQuote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, prefixedGroup, "m201/星辰专属").First(&repricedQuote).Error)
+	assert.InDelta(t, 3.0, repricedQuote.InputPrice, 1e-9)
+	assert.InDelta(t, 9.0, repricedQuote.OutputPrice, 1e-9)
 
 	// 3. 商家提交分组倍率 / Auto 路由变更申请（未审核前不得直接生效）
 	rateRecorder := httptest.NewRecorder()
 	rateCtx, _ := gin.CreateTestContext(rateRecorder)
 	rateCtx.Set("id", 201)
 	rateCtx.Request = httptest.NewRequest(http.MethodPut, "/api/merchant/portal/rate", strings.NewReader(
-		`{"group_name":"alpha-vip","group_desc":"Alpha Updated","rate_multiplier":0.8,"join_auto_group":false}`))
+		`{"group_name":"`+prefixedGroup+`","group_desc":"Alpha Updated","rate_multiplier":0.8,"join_auto_group":false}`))
 	rateCtx.Request.Header.Set("Content-Type", "application/json")
 	UpdateMerchantPortalRate(rateCtx)
 	require.Equal(t, http.StatusOK, rateRecorder.Code, rateRecorder.Body.String())
 
-	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio("alpha-vip"), 1e-9)
-	assert.True(t, setting.ContainsAutoGroup("alpha-vip"))
+	assert.InDelta(t, 0.5, ratio_setting.GetGroupRatio(prefixedGroup), 1e-9)
+	assert.True(t, setting.ContainsAutoGroup(prefixedGroup))
 
 	var changeApp model.MerchantApplication
 	require.NoError(t, db.Where("user_id = ? AND app_type = ? AND status = ?", 201, model.MerchantAppTypeGroupChange, model.MerchantApplicationPending).First(&changeApp).Error)
-	assert.Equal(t, "alpha-vip", changeApp.GroupName)
+	assert.Equal(t, prefixedGroup, changeApp.GroupName)
 	assert.InDelta(t, 0.8, changeApp.RateMultiplier, 1e-9)
 	assert.False(t, changeApp.JoinAutoGroup)
 
@@ -402,12 +465,12 @@ func TestMerchantCustomGroupReviewAndGroupChangeApproval(t *testing.T) {
 	require.NoError(t, json.Unmarshal(changeReviewRecorder.Body.Bytes(), &changeReviewResp))
 	assert.True(t, changeReviewResp.Success, changeReviewRecorder.Body.String())
 
-	assert.InDelta(t, 0.8, ratio_setting.GetGroupRatio("alpha-vip"), 1e-9)
-	assert.Equal(t, "Alpha Updated", setting.GetUserUsableGroupsCopy()["alpha-vip"])
-	assert.False(t, setting.ContainsAutoGroup("alpha-vip"))
+	assert.InDelta(t, 0.8, ratio_setting.GetGroupRatio(prefixedGroup), 1e-9)
+	assert.Equal(t, "Alpha Updated", setting.GetUserUsableGroupsCopy()[prefixedGroup])
+	assert.False(t, setting.ContainsAutoGroup(prefixedGroup))
 
 	var updatedQuote model.ChannelQuote
-	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, "alpha-vip", "gpt-5.6").First(&updatedQuote).Error)
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?", channel.Id, prefixedGroup, "gpt-5.6").First(&updatedQuote).Error)
 	assert.InDelta(t, 2.0, updatedQuote.RateMultiplier, 1e-9)
 	assert.InDelta(t, 4.0, updatedQuote.InputPrice, 1e-9)
 	assert.InDelta(t, 16.0, updatedQuote.OutputPrice, 1e-9)

@@ -78,6 +78,7 @@ import { MerchantApplyForm } from './apply-form'
 import { ChannelEditDialog } from './components/channel-edit-dialog'
 import type {
   MerchantApplication,
+  MerchantCustomModelPrice,
   MerchantPoolChannel,
   MerchantPoolGroup,
   MerchantPoolMeta,
@@ -366,6 +367,8 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
   const groups = poolsQuery.data?.groups ?? []
   const poolMeta = poolsQuery.data?.pool_meta ?? {}
   const pendingApp = poolsQuery.data?.pending_application ?? null
+  const merchantUserId = poolsQuery.data?.merchant_user_id
+  const customModelPrices = poolsQuery.data?.custom_model_prices
   const groupByPool = new Map(groups.map((group) => [group.pool, group]))
 
   /** 扩容申请提交成功后关闭表单并刷新门户数据。 */
@@ -380,6 +383,8 @@ function MerchantPoolsTab({ onChanged }: { onChanged: () => void }) {
         pool={selectedPool}
         group={groupByPool.get(selectedPool)}
         meta={poolMeta[selectedPool]}
+        merchantUserId={merchantUserId}
+        customModelPrices={customModelPrices}
         locale={locale}
         onBack={() => setSelectedPool(null)}
         onAddChannel={() => setAdding(true)}
@@ -543,6 +548,8 @@ function PoolGroupDetail({
   pool,
   group,
   meta,
+  merchantUserId,
+  customModelPrices,
   locale,
   onBack,
   onAddChannel,
@@ -554,6 +561,8 @@ function PoolGroupDetail({
   pool: string
   group: MerchantPoolGroup | undefined
   meta: MerchantPoolMeta | undefined
+  merchantUserId?: number
+  customModelPrices?: Record<string, MerchantCustomModelPrice>
   locale: string | undefined
   onBack: () => void
   onAddChannel: () => void
@@ -614,6 +623,9 @@ function PoolGroupDetail({
           <ChannelCard
             key={channel.channel_id}
             channel={channel}
+            groupRatio={groupRatio}
+            merchantUserId={merchantUserId}
+            customModelPrices={customModelPrices}
             locale={locale}
             onChanged={onChanged}
           />
@@ -675,10 +687,16 @@ function PoolGroupDetail({
 /** 第三层：单个渠道卡片，展示倍率与近 24h 调用数据。 */
 function ChannelCard({
   channel,
+  groupRatio,
+  merchantUserId,
+  customModelPrices,
   locale,
   onChanged,
 }: {
   channel: MerchantPoolChannel
+  groupRatio: number
+  merchantUserId?: number
+  customModelPrices?: Record<string, MerchantCustomModelPrice>
   locale: string | undefined
   onChanged: () => void
 }) {
@@ -821,6 +839,9 @@ function ChannelCard({
         <ChannelEditDialog
           key={editChannel.channel_id}
           channel={editChannel}
+          merchantUserId={merchantUserId}
+          groupRatio={groupRatio}
+          customModelPrices={customModelPrices}
           onClose={() => setEditChannel(null)}
           onSaved={onChanged}
         />

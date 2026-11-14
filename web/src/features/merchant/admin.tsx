@@ -587,6 +587,15 @@ function ApplicationsTab() {
                   {quotes.map((q) => (
                     <p key={q.model} className='font-mono'>
                       {q.model}
+                      {q.upstream && q.upstream !== q.model
+                        ? ` ← ${q.upstream}`
+                        : ''}
+                      {typeof q.input_price === 'number' &&
+                      typeof q.output_price === 'number' &&
+                      q.input_price > 0 &&
+                      q.output_price > 0
+                        ? ` (基准价: $${q.input_price} / $${q.output_price} per 1M)`
+                        : ''}
                       {q.pool ? `, ${q.pool}` : ''}
                     </p>
                   ))}

@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -35,15 +38,23 @@ var errMerchantGroupForbidden = errors.New("merchant group forbidden")
 // merchantGroupSyncMu 串行化管理员审核时对全局 GroupRatio / UserUsableGroups / AutoGroups 的读写，
 // 防止并发审核互相覆盖。
 var merchantGroupSyncMu sync.Mutex
+var merchantNativeRatioMu sync.Mutex
 
-// merchantModelQuote 入驻申请中要上架的模型条目。
-// Model 是平台官方模型名（用户请求的名字）；Upstream 是上游实际模型名，
-// 两者不同时审核通过会写入渠道的 model_mapping（官方名 → 上游名）。
-// 商家不填价格：模型归属哪个号池由管理员审核时决定，价格由分组倍率派生。
+// merchantModelQuote 入驻申请或渠道更新中要上架的模型条目。
+// Model 是平台官方模型名或商家专属前缀模型名（m{UserId}/alias）；Upstream 是上游实际模型名，
+// 两者不同时审核通过会写入渠道的 model_mapping（暴露名 → 上游名）。
+// 对于 m{UserId}/ 开头的自定义模型，允许填写 InputPrice / OutputPrice（美元/1M 基准价）。
 type merchantModelQuote struct {
-	Model    string `json:"model"`
-	Pool     string `json:"pool"`
-	Upstream string `json:"upstream,omitempty"`
+	Model       string  `json:"model"`
+	Pool        string  `json:"pool"`
+	Upstream    string  `json:"upstream,omitempty"`
+	InputPrice  float64 `json:"input_price,omitempty"`
+	OutputPrice float64 `json:"output_price,omitempty"`
+}
+
+type merchantCustomPrice struct {
+	InputPrice  float64 `json:"input_price"`
+	OutputPrice float64 `json:"output_price"`
 }
 
 // merchantChannelModelLimit 审核通过时写入渠道的模型数上限（探测清单可能很长）。
@@ -51,6 +62,197 @@ const merchantChannelModelLimit = 200
 
 // merchantRateMultiplierLimit 分组倍率上限。
 const merchantRateMultiplierLimit = 100.0
+
+// merchantCustomPriceMax 自定义模型基准单价上限（美元/1M tokens）。
+const merchantCustomPriceMax = 10000.0
+
+func merchantCustomModelPrefix(userId int) string {
+	return fmt.Sprintf("m%d/", userId)
+}
+
+func parseMerchantCustomModelOwner(modelName string) (int, bool) {
+	if !strings.HasPrefix(modelName, "m") {
+		return 0, false
+	}
+	slashIdx := strings.IndexByte(modelName, '/')
+	if slashIdx <= 1 {
+		return 0, false
+	}
+	id, err := strconv.Atoi(modelName[1:slashIdx])
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func isMerchantCustomModel(userId int, modelName string) bool {
+	if userId <= 0 {
+		return false
+	}
+	prefix := merchantCustomModelPrefix(userId)
+	if !strings.HasPrefix(modelName, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(modelName, prefix)
+	return suffix != "" && !strings.ContainsAny(suffix, ", \t\r\n/")
+}
+
+func validateAndCollectCustomModelPrices(userId int, quotes []merchantModelQuote) (map[string]merchantCustomPrice, error) {
+	prices := make(map[string]merchantCustomPrice)
+	for _, q := range quotes {
+		name := strings.TrimSpace(q.Model)
+		if name == "" {
+			continue
+		}
+		if ownerId, ok := parseMerchantCustomModelOwner(name); ok && ownerId != userId {
+			return nil, fmt.Errorf("不能使用或修改其他商家的专属前缀模型：%s", name)
+		}
+		isOwnedCustom := isMerchantCustomModel(userId, name)
+		hasInput := q.InputPrice != 0
+		hasOutput := q.OutputPrice != 0
+		if (hasInput || hasOutput) && !isOwnedCustom {
+			return nil, fmt.Errorf("仅允许为您名下自定义前缀模型（%s...）设置价格：%s", merchantCustomModelPrefix(userId), name)
+		}
+		if !isOwnedCustom {
+			continue
+		}
+		if hasInput || hasOutput {
+			if math.IsNaN(q.InputPrice) || math.IsInf(q.InputPrice, 0) || q.InputPrice <= 0 || q.InputPrice > merchantCustomPriceMax {
+				return nil, fmt.Errorf("自定义模型 %s 的输入基准价需在 0（不含）~ %.0f 之间", name, merchantCustomPriceMax)
+			}
+			if math.IsNaN(q.OutputPrice) || math.IsInf(q.OutputPrice, 0) || q.OutputPrice <= 0 || q.OutputPrice > merchantCustomPriceMax {
+				return nil, fmt.Errorf("自定义模型 %s 的输出基准价需在 0（不含）~ %.0f 之间", name, merchantCustomPriceMax)
+			}
+			prices[name] = merchantCustomPrice{
+				InputPrice:  q.InputPrice,
+				OutputPrice: q.OutputPrice,
+			}
+		} else if !ratio_setting.HasConfiguredModelRatio(name) {
+			return nil, fmt.Errorf("自定义模型 %s 尚未配置基础定价，请填写输入与输出基准价", name)
+		}
+	}
+	return prices, nil
+}
+
+func syncCustomModelRatiosToNativeSettings(prices map[string]merchantCustomPrice) error {
+	if len(prices) == 0 {
+		return nil
+	}
+	merchantNativeRatioMu.Lock()
+	defer merchantNativeRatioMu.Unlock()
+
+	modelRatios := ratio_setting.GetModelRatioCopy()
+	completionRatios := ratio_setting.GetCompletionRatioCopy()
+	for name, price := range prices {
+		modelRatios[name] = price.InputPrice / model.QuoteRatioBase
+		completionRatios[name] = price.OutputPrice / price.InputPrice
+	}
+	modelBytes, err := common.Marshal(modelRatios)
+	if err != nil {
+		return err
+	}
+	completionBytes, err := common.Marshal(completionRatios)
+	if err != nil {
+		return err
+	}
+	return model.UpdateOptionsBulk(map[string]string{
+		"ModelRatio":      string(modelBytes),
+		"CompletionRatio": string(completionBytes),
+	})
+}
+
+func getMerchantCustomModelPricesSnapshot(userId int) map[string]merchantCustomPrice {
+	out := make(map[string]merchantCustomPrice)
+	if userId <= 0 {
+		return out
+	}
+	prefix := merchantCustomModelPrefix(userId)
+	modelRatios := ratio_setting.GetModelRatioCopy()
+	completionRatios := ratio_setting.GetCompletionRatioCopy()
+	for name, r := range modelRatios {
+		if !strings.HasPrefix(name, prefix) || r <= 0 {
+			continue
+		}
+		inputPrice := r * model.QuoteRatioBase
+		completion := completionRatios[name]
+		if completion <= 0 {
+			completion = 1
+		}
+		out[name] = merchantCustomPrice{
+			InputPrice:  inputPrice,
+			OutputPrice: inputPrice * completion,
+		}
+	}
+	return out
+}
+
+func validateMerchantSiteNameUnique(userId int, siteName string) error {
+	trimmed := strings.TrimSpace(siteName)
+	if trimmed == "" {
+		return errors.New("商户名称不能为空")
+	}
+	var profileCount int64
+	if err := model.DB.Model(&model.MerchantProfile{}).
+		Where("user_id <> ? AND site_name = ?", userId, trimmed).
+		Count(&profileCount).Error; err != nil {
+		return err
+	}
+	if profileCount > 0 {
+		return fmt.Errorf("商户名称 %q 已被其他商家使用，请更换名称", trimmed)
+	}
+	var appCount int64
+	if err := model.DB.Model(&model.MerchantApplication{}).
+		Where("user_id <> ? AND status = ? AND site_name = ?", userId, model.MerchantApplicationPending, trimmed).
+		Count(&appCount).Error; err != nil {
+		return err
+	}
+	if appCount > 0 {
+		return fmt.Errorf("商户名称 %q 正在被其他商家申请使用，请更换名称", trimmed)
+	}
+	return nil
+}
+
+func merchantOwnsGroup(userId int, groupName string) (bool, error) {
+	if userId <= 0 || groupName == "" || model.DB == nil {
+		return false, nil
+	}
+	var ownChannelCount int64
+	if err := model.ApplyChannelGroupFilter(model.DB.Model(&model.Channel{}), groupName).
+		Where("merchant_id = ?", userId).
+		Count(&ownChannelCount).Error; err != nil {
+		return false, err
+	}
+	if ownChannelCount > 0 {
+		return true, nil
+	}
+	var ownApprovedAppCount int64
+	if err := model.DB.Model(&model.MerchantApplication{}).
+		Where("user_id = ? AND group_name = ? AND status = ?",
+			userId, groupName, model.MerchantApplicationApproved).
+		Count(&ownApprovedAppCount).Error; err != nil {
+		return false, err
+	}
+	return ownApprovedAppCount > 0, nil
+}
+
+func normalizeMerchantGroupName(userId int, siteName, rawGroupName string) string {
+	trimmedGroup := strings.TrimSpace(rawGroupName)
+	if trimmedGroup == "" {
+		return ""
+	}
+	if owned, err := merchantOwnsGroup(userId, trimmedGroup); err == nil && owned {
+		return trimmedGroup
+	}
+	trimmedSite := strings.TrimSpace(siteName)
+	if trimmedSite == "" || isSystemReservedGroup(trimmedGroup) {
+		return trimmedGroup
+	}
+	prefix := trimmedSite + "-"
+	if strings.HasPrefix(trimmedGroup, prefix) {
+		return trimmedGroup
+	}
+	return prefix + trimmedGroup
+}
 
 // isSystemReservedGroup 判定分组名称是否为系统保留分组，防止商家声明或篡改平台核心分组。
 func isSystemReservedGroup(name string) bool {
@@ -65,16 +267,17 @@ func isSystemReservedGroup(name string) bool {
 // validateMerchantGroupName 校验商家专属分组名称格式与保留词约束。
 func validateMerchantGroupName(name string) error {
 	trimmed := strings.TrimSpace(name)
-	if trimmed != name || len(trimmed) < 2 || len(trimmed) > 64 {
+	runeCount := utf8.RuneCountInString(trimmed)
+	if trimmed != name || runeCount < 2 || runeCount > 64 {
 		return errors.New("分组名称长度需在 2~64 个字符之间，且首尾不能有空白")
 	}
 	if isSystemReservedGroup(trimmed) {
 		return fmt.Errorf("分组名称 %q 为系统保留分组，请使用其他名称", trimmed)
 	}
 	for _, r := range trimmed {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
-		if !isAlphaNum && r != '-' && r != '_' {
-			return fmt.Errorf("分组名称 %q 仅允许字母、数字、连字符(-)与下划线(_)", trimmed)
+		isValidChar := unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_'
+		if !isValidChar {
+			return fmt.Errorf("分组名称 %q 仅允许中文、字母、数字、连字符(-)与下划线(_)", trimmed)
 		}
 	}
 	return nil
@@ -106,20 +309,10 @@ func validateMerchantGroupOwnership(userId int, groupName string, mustExist bool
 	if otherAppCount > 0 {
 		return fmt.Errorf("%w：分组 %q 已被其他商家申请或使用", errMerchantGroupForbidden, groupName)
 	}
-	var ownChannelCount int64
-	if err := model.ApplyChannelGroupFilter(model.DB.Model(&model.Channel{}), groupName).
-		Where("merchant_id = ?", userId).
-		Count(&ownChannelCount).Error; err != nil {
+	ownsGroup, err := merchantOwnsGroup(userId, groupName)
+	if err != nil {
 		return err
 	}
-	var ownApprovedAppCount int64
-	if err := model.DB.Model(&model.MerchantApplication{}).
-		Where("user_id = ? AND group_name = ? AND status = ?",
-			userId, groupName, model.MerchantApplicationApproved).
-		Count(&ownApprovedAppCount).Error; err != nil {
-		return err
-	}
-	ownsGroup := ownChannelCount > 0 || ownApprovedAppCount > 0
 	if mustExist {
 		if !ownsGroup {
 			return fmt.Errorf("%w：您尚无权调整分组 %q，请先创建或申请该专属分组", errMerchantGroupForbidden, groupName)
@@ -247,13 +440,23 @@ func PostMerchantApplication(c *gin.Context) {
 			return
 		}
 		req.Models[i].Model = name
+		req.Models[i].Upstream = strings.TrimSpace(req.Models[i].Upstream)
+	}
+	if _, err := validateAndCollectCustomModelPrices(userId, req.Models); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	siteName := strings.TrimSpace(req.SiteName)
+	if err := validateMerchantSiteNameUnique(userId, siteName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
 	}
 	if req.RateMultiplier < 0 || req.RateMultiplier > merchantRateMultiplierLimit {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率不能为负数，且不能超过 100"})
 		return
 	}
 
-	groupName := strings.TrimSpace(req.GroupName)
+	groupName := normalizeMerchantGroupName(userId, siteName, req.GroupName)
 	if groupName != "" {
 		if err := validateMerchantGroupOwnership(userId, groupName, false); err != nil {
 			writeMerchantGroupValidationError(c, err)
@@ -557,8 +760,17 @@ func UpdateMerchantChannel(c *gin.Context) {
 	if !ok {
 		return
 	}
+	siteName := strings.TrimSpace(req.SiteName)
+	if siteName != "" {
+		if err := validateMerchantSiteNameUnique(profile.UserId, siteName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+	}
+
+	var customPrices map[string]merchantCustomPrice
 	if req.Models != nil {
-		for _, m := range *req.Models {
+		for i, m := range *req.Models {
 			name := strings.TrimSpace(m.Model)
 			if name == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型对接存在空条目"})
@@ -570,14 +782,23 @@ func UpdateMerchantChannel(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型名不能包含逗号或空白字符：" + name})
 				return
 			}
-			if !isPlatformPriceableModel(name) {
-				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型未在平台配置价格（固定价格/模型倍率/阶梯计费），请先在平台定价后再上架：" + name})
+			(*req.Models)[i].Model = name
+			(*req.Models)[i].Upstream = strings.TrimSpace(m.Upstream)
+		}
+		var priceErr error
+		customPrices, priceErr = validateAndCollectCustomModelPrices(profile.UserId, *req.Models)
+		if priceErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": priceErr.Error()})
+			return
+		}
+		for _, m := range *req.Models {
+			if _, isDeclaredCustom := customPrices[m.Model]; !isDeclaredCustom && !isPlatformPriceableModel(m.Model) {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "模型未在平台配置价格（固定价格/模型倍率/阶梯计费），请先在平台定价后再上架：" + m.Model})
 				return
 			}
 		}
 	}
 
-	siteName := strings.TrimSpace(req.SiteName)
 	siteUrl := strings.TrimSpace(req.SiteUrl)
 	siteKey := strings.TrimSpace(req.SiteKey)
 	if siteUrl != "" {
@@ -661,6 +882,13 @@ func UpdateMerchantChannel(c *gin.Context) {
 		}
 	}
 
+	if len(customPrices) > 0 {
+		if err := syncCustomModelRatiosToNativeSettings(customPrices); err != nil {
+			common.ApiError(c, fmt.Errorf("同步自定义模型基准定价失败: %w", err))
+			return
+		}
+	}
+
 	if len(updates) > 0 {
 		// 渠道更新、路由索引重建、盘口重建必须在同一事务，
 		// 避免探测通过但落库失败留下"models 已变、路由/盘口还是旧的"的半成品。
@@ -675,7 +903,8 @@ func UpdateMerchantChannel(c *gin.Context) {
 			if err := fresh.UpdateAbilities(tx); err != nil {
 				return fmt.Errorf("重建路由索引失败: %w", err)
 			}
-			if _, hasModels := updates["models"]; hasModels {
+			_, hasModels := updates["models"]
+			if hasModels || len(customPrices) > 0 {
 				if err := model.RebuildChannelQuotesWithTx(tx, &fresh); err != nil {
 					return fmt.Errorf("重建渠道盘口失败: %w", err)
 				}
@@ -687,6 +916,12 @@ func UpdateMerchantChannel(c *gin.Context) {
 			return
 		}
 		// 事务提交后刷新内存渠道缓存（未开缓存时为安全空操作）
+		model.InitChannelCache()
+	} else if len(customPrices) > 0 {
+		if err := model.RebuildChannelQuotes(channel.Id); err != nil {
+			common.ApiError(c, fmt.Errorf("重建渠道盘口失败: %w", err))
+			return
+		}
 		model.InitChannelCache()
 	}
 	// 商家资料里的站点信息保持一致
@@ -706,7 +941,7 @@ func UpdateMerchantChannel(c *gin.Context) {
 	}
 	common.ApiSuccess(c, gin.H{
 		"channel_id": channel.Id,
-		"updated":    len(updates) > 0,
+		"updated":    len(updates) > 0 || len(customPrices) > 0,
 	})
 }
 
@@ -1056,6 +1291,8 @@ func GetMerchantPortalPools(c *gin.Context) {
 		"groups":              groups,
 		"pool_meta":           poolMeta,
 		"pending_application": pendingApp,
+		"merchant_user_id":    profile.UserId,
+		"custom_model_prices": getMerchantCustomModelPricesSnapshot(profile.UserId),
 	})
 }
 
@@ -1606,6 +1843,9 @@ func ReviewMerchantApplication(c *gin.Context) {
 	if req.GroupName != nil {
 		targetGroup = strings.TrimSpace(*req.GroupName)
 	}
+	if !isGroupChange && targetGroup != "" {
+		targetGroup = normalizeMerchantGroupName(preview.UserId, preview.SiteName, targetGroup)
+	}
 	targetDesc := strings.TrimSpace(preview.GroupDesc)
 	if req.GroupDesc != nil {
 		targetDesc = strings.TrimSpace(*req.GroupDesc)
@@ -1727,12 +1967,17 @@ func ReviewMerchantApplication(c *gin.Context) {
 	}
 
 	var quotes []merchantModelQuote
+	var customPrices map[string]merchantCustomPrice
 	models := make([]string, 0)
 	var probe *service.UpstreamProbe
 	channelType := constant.ChannelTypeOpenAI
 	priceSyncEnabled := false
 	var modelMappingJSON *string
 	if approve {
+		if err := validateMerchantSiteNameUnique(preview.UserId, preview.SiteName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		if targetGroup != "" {
 			if err := validateMerchantGroupOwnership(preview.UserId, targetGroup, false); err != nil {
 				writeMerchantGroupValidationError(c, err)
@@ -1807,6 +2052,12 @@ func ReviewMerchantApplication(c *gin.Context) {
 			})
 			return
 		}
+		var priceErr error
+		customPrices, priceErr = validateAndCollectCustomModelPrices(preview.UserId, quotes)
+		if priceErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": priceErr.Error()})
+			return
+		}
 		for _, name := range models {
 			if strings.ContainsAny(name, ", \t\r\n") {
 				c.JSON(http.StatusBadRequest, gin.H{
@@ -1815,7 +2066,7 @@ func ReviewMerchantApplication(c *gin.Context) {
 				})
 				return
 			}
-			if !isPlatformPriceableModel(name) {
+			if _, isDeclaredCustom := customPrices[name]; !isDeclaredCustom && !isPlatformPriceableModel(name) {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"success": false,
 					"message": "模型未在平台配置价格（固定价格/模型倍率/阶梯计费），请先在平台定价后再通过审核：" + name,
@@ -1944,6 +2195,12 @@ func ReviewMerchantApplication(c *gin.Context) {
 		if targetGroup != "" && slices.Contains(poolsToUse, targetGroup) {
 			if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, preview.SiteName); err != nil {
 				common.ApiError(c, fmt.Errorf("同步商家分组配置失败: %w", err))
+				return
+			}
+		}
+		if len(customPrices) > 0 {
+			if err := syncCustomModelRatiosToNativeSettings(customPrices); err != nil {
+				common.ApiError(c, fmt.Errorf("同步自定义模型基准定价失败: %w", err))
 				return
 			}
 		}

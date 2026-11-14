@@ -40,8 +40,16 @@ import {
   probeMerchantChannel,
   updateMerchantChannel,
 } from '../api'
-import type { MerchantModelQuote, MerchantPoolChannel } from '../types'
-import { buildModelQuotesFromMapping } from '../lib/model-mapping'
+import {
+  buildModelQuotesFromMapping,
+  type CustomModelPriceDraft,
+  validateCustomModelQuotes,
+} from '../lib/model-mapping'
+import type {
+  MerchantCustomModelPrice,
+  MerchantModelQuote,
+  MerchantPoolChannel,
+} from '../types'
 import { MerchantModelMappingEditor } from './model-mapping-editor'
 
 /** 渠道名里平台加的前缀；编辑时商家看到的应是自己的站点名。 */
@@ -50,8 +58,25 @@ const MERCHANT_NAME_PREFIX = '商家:'
 interface ChannelEditDialogProps {
   /** 要编辑的渠道（父组件按渠道挂载本弹窗）。 */
   channel: MerchantPoolChannel
+  merchantUserId?: number
+  groupRatio?: number
+  customModelPrices?: Record<string, MerchantCustomModelPrice>
   onClose: () => void
   onSaved: () => void
+}
+
+function toDraftPriceMap(
+  source?: Record<string, MerchantCustomModelPrice>
+): Record<string, CustomModelPriceDraft> {
+  const out: Record<string, CustomModelPriceDraft> = {}
+  if (!source) return out
+  for (const [model, price] of Object.entries(source)) {
+    out[model] = {
+      input: String(price.input_price),
+      output: String(price.output_price),
+    }
+  }
+  return out
 }
 
 /** 从渠道当前信息推导表单初值与对接行（含已保存的改名映射）。 */
@@ -113,6 +138,9 @@ export function ChannelEditDialog(props: ChannelEditDialogProps) {
   // 模型对接行：初值 = 渠道当前上架清单；探测后切换为上游完整清单
   const [upstreamModels, setUpstreamModels] = useState(initial.rows)
   const [mapping, setMapping] = useState<Record<string, string>>(initial.seed)
+  const [customPrices, setCustomPrices] = useState<
+    Record<string, CustomModelPriceDraft>
+  >(() => toDraftPriceMap(props.customModelPrices))
   const [modelsDirty, setModelsDirty] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -181,6 +209,19 @@ export function ChannelEditDialog(props: ChannelEditDialogProps) {
   }
 
   const save = async () => {
+    if (modelsDirty) {
+      const customErr = validateCustomModelQuotes(
+        upstreamModels,
+        mapping,
+        platformModels,
+        customPrices,
+        props.merchantUserId
+      )
+      if (customErr) {
+        toast.error(t(customErr))
+        return
+      }
+    }
     setSaving(true)
     try {
       const body: {
@@ -197,7 +238,9 @@ export function ChannelEditDialog(props: ChannelEditDialogProps) {
         body.models = buildModelQuotesFromMapping(
           upstreamModels,
           mapping,
-          platformModels
+          platformModels,
+          customPrices,
+          props.merchantUserId
         )
       }
       await updateMerchantChannel(body)
@@ -305,6 +348,13 @@ export function ChannelEditDialog(props: ChannelEditDialogProps) {
                 upstreamModels={upstreamModels}
                 platformModels={platformModels}
                 value={mapping}
+                merchantUserId={props.merchantUserId}
+                groupRatio={props.groupRatio ?? channel.rate_multiplier ?? 1}
+                customPrices={customPrices}
+                onCustomPricesChange={(next) => {
+                  setCustomPrices(next)
+                  setModelsDirty(true)
+                }}
                 onChange={(next) => {
                   setMapping(next)
                   setModelsDirty(true)
