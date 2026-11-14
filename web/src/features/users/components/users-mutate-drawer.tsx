@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -33,7 +33,10 @@ import {
 } from '@/components/drawer-layout'
 import { PasswordInput } from '@/components/password-input'
 import { PasswordStrength } from '@/components/password-strength'
-import { PermissionMatrix } from '@/components/permission-matrix'
+import {
+  PermissionMatrix,
+  type PermissionMatrixGroup,
+} from '@/components/permission-matrix'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import {
@@ -68,11 +71,16 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
+  ADMIN_ROLE_KEY,
   EMPTY_PERMISSION_CATALOG,
+  FINANCE_ROLE_KEY,
   hasPermission,
   normalizeAdminPermissions,
+  normalizeAuditReasonRules,
+  roleGrants,
   type AdminPermissionMatrix,
 } from '@/lib/admin-permissions'
+import { ensureAuditReason } from '@/lib/audit-reason'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -122,6 +130,7 @@ export function UsersMutateDrawer({
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
+  const loadedAuditRules = useRef<AdminPermissionMatrix | undefined>(undefined)
 
   // Fetch groups
   const { data: groupsData } = useQuery({
@@ -147,22 +156,46 @@ export function UsersMutateDrawer({
   // Load existing data when updating
   useEffect(() => {
     if (open && isUpdate && currentRow) {
-      // For update, fetch fresh data
-      getUser(currentRow.id)
-        .then((result) => {
+      let active = true
+      ;(async () => {
+        try {
+          const reason = await ensureAuditReason(
+            currentUser,
+            ADMIN_PERMISSION_RESOURCES.USER,
+            ADMIN_PERMISSION_ACTIONS.SECRET_VIEW,
+            {
+              title: t('Verify Purpose Before Viewing User Details'),
+              summary: `${t('User')}: ${currentRow.username} (#${currentRow.id})`,
+            }
+          )
+          if (!active) return
+          if (reason === null) {
+            onOpenChange(false)
+            return
+          }
+          const result = await getUser(currentRow.id, reason || undefined)
+          if (!active) return
           if (result.success && result.data) {
             loadedPermissions.current = result.data.admin_permissions
+            loadedAuditRules.current = result.data.admin_audit_reason_rules
             form.reset(transformUserToFormDefaults(result.data))
           } else {
             handleServerError(result, t('Failed to load'))
           }
-        })
-        .catch((error) => handleServerError(error, t('Failed to load')))
+        } catch (error) {
+          if (active) handleServerError(error, t('Failed to load'))
+        }
+      })()
+      return () => {
+        active = false
+      }
     } else if (open && !isUpdate) {
       // For create, reset to defaults
+      loadedPermissions.current = undefined
+      loadedAuditRules.current = undefined
       form.reset(USER_FORM_DEFAULT_VALUES)
     }
-  }, [open, isUpdate, currentRow, form, t])
+  }, [open, isUpdate, currentRow, currentUser, form, onOpenChange, t])
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -171,8 +204,119 @@ export function UsersMutateDrawer({
   const currentQuotaRaw = form.watch('quota_dollars') || 0
   const currentGiftQuotaRaw = form.watch('gift_quota_dollars') || 0
   const selectedRole = form.watch('role')
+  const effectiveRole = selectedRole ?? currentRow?.role ?? 0
+  const effectiveRoleKey =
+    effectiveRole === ROLE.FINANCE ? FINANCE_ROLE_KEY : ADMIN_ROLE_KEY
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
-  const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
+  const targetIsStaff = effectiveRole >= ROLE.FINANCE && effectiveRole < ROLE.SUPER_ADMIN
+
+  const permissionGroups = useMemo<PermissionMatrixGroup[]>(() => {
+    const groupDefs: Array<{
+      key: string
+      labelKey: string
+      resources: string[]
+    }> = [
+      { key: 'finance', labelKey: 'Finance & Settlement', resources: ['finance'] },
+      { key: 'merchant', labelKey: 'Merchants', resources: ['merchant'] },
+      { key: 'channel', labelKey: 'Channels', resources: ['channel'] },
+      { key: 'user', labelKey: 'Users', resources: ['user'] },
+      {
+        key: 'billing',
+        labelKey: 'Billing & Redemptions',
+        resources: ['billing', 'redemption'],
+      },
+      {
+        key: 'platform',
+        labelKey: 'Audit & Plugins',
+        resources: ['audit', 'task_plugin'],
+      },
+    ]
+    const byRes = new Map(
+      permissionCatalog.resources.map((r) => [r.resource, r])
+    )
+    const used = new Set<string>()
+    const built: PermissionMatrixGroup[] = []
+    for (const def of groupDefs) {
+      const items = def.resources
+        .map((res) => {
+          const found = byRes.get(res)
+          if (found) used.add(res)
+          return found
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x))
+      if (items.length > 0) {
+        built.push({ key: def.key, labelKey: def.labelKey, resources: items })
+      }
+    }
+    const leftovers = permissionCatalog.resources.filter(
+      (r) => !used.has(r.resource)
+    )
+    if (leftovers.length > 0) {
+      built.push({ key: 'other', labelKey: 'Other', resources: leftovers })
+    }
+    return built
+  }, [permissionCatalog.resources])
+
+  const applyPermissionPreset = (
+    preset:
+      | 'finance'
+      | 'merchant_ops'
+      | 'channel_ops'
+      | 'admin'
+      | 'read_only'
+      | 'clear'
+  ) => {
+    const emptyMatrix: AdminPermissionMatrix = {}
+    for (const res of permissionCatalog.resources) {
+      emptyMatrix[res.resource] = {}
+      for (const act of res.actions) {
+        emptyMatrix[res.resource][act.action] = false
+      }
+    }
+    const nextPerms: AdminPermissionMatrix = structuredClone(emptyMatrix)
+    if (preset === 'finance') {
+      const grants = roleGrants(permissionCatalog, FINANCE_ROLE_KEY)
+      form.setValue('admin_permissions', normalizeAdminPermissions(grants, permissionCatalog, FINANCE_ROLE_KEY))
+      form.setValue('admin_audit_reason_rules', normalizeAuditReasonRules(undefined, permissionCatalog, FINANCE_ROLE_KEY))
+      return
+    }
+    if (preset === 'admin') {
+      const grants = roleGrants(permissionCatalog, ADMIN_ROLE_KEY)
+      form.setValue('admin_permissions', normalizeAdminPermissions(grants, permissionCatalog, ADMIN_ROLE_KEY))
+      form.setValue('admin_audit_reason_rules', normalizeAuditReasonRules(undefined, permissionCatalog, ADMIN_ROLE_KEY))
+      return
+    }
+    if (preset === 'merchant_ops') {
+      if (nextPerms.merchant) {
+        nextPerms.merchant.read = true
+        nextPerms.merchant.write = true
+        nextPerms.merchant.review = true
+      }
+      if (nextPerms.finance) nextPerms.finance.read = true
+      if (nextPerms.user) nextPerms.user.read = true
+    } else if (preset === 'channel_ops') {
+      if (nextPerms.channel) {
+        nextPerms.channel.read = true
+        nextPerms.channel.operate = true
+        nextPerms.channel.write = true
+      }
+    } else if (preset === 'read_only') {
+      for (const res of permissionCatalog.resources) {
+        if (nextPerms[res.resource]?.read !== undefined) {
+          nextPerms[res.resource].read = true
+        }
+      }
+    }
+    form.setValue('admin_permissions', nextPerms)
+    if (preset === 'clear') {
+      form.setValue('admin_audit_reason_rules', emptyMatrix)
+    } else {
+      form.setValue(
+        'admin_audit_reason_rules',
+        normalizeAuditReasonRules(undefined, permissionCatalog, effectiveRoleKey)
+      )
+    }
+  }
 
   const onSubmit = async (data: UserFormValues) => {
     if (!isUpdate || data.password) {
@@ -199,11 +343,26 @@ export function UsersMutateDrawer({
           JSON.stringify(
             normalizeAdminPermissions(
               loadedPermissions.current,
-              permissionCatalog
+              permissionCatalog,
+              effectiveRoleKey
             )
           )
       ) {
         delete payload.admin_permissions
+      }
+      if (
+        isUpdate &&
+        payload.admin_audit_reason_rules &&
+        JSON.stringify(payload.admin_audit_reason_rules) ===
+          JSON.stringify(
+            normalizeAuditReasonRules(
+              loadedAuditRules.current,
+              permissionCatalog,
+              effectiveRoleKey
+            )
+          )
+      ) {
+        delete payload.admin_audit_reason_rules
       }
       // Resetting a password, rewriting admin permissions, or creating an
       // administrator changes who can sign in or what they may do.
@@ -222,7 +381,7 @@ export function UsersMutateDrawer({
           if (!proof) return
           proofToken = proof.proof_token
         }
-      } else if ((payload.role ?? 0) >= ROLE.ADMIN) {
+      } else if ((payload.role ?? 0) >= ROLE.FINANCE) {
         const proof = await requestVerification({
           scope: 'admin.user.create',
           context: { role: payload.role ?? ROLE.ADMIN },
@@ -340,6 +499,7 @@ export function UsersMutateDrawer({
                         <Select
                           items={[
                             { value: '1', label: t('Common User') },
+                            { value: '6', label: t('Finance Officer') },
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
@@ -357,6 +517,9 @@ export function UsersMutateDrawer({
                             <SelectGroup>
                               <SelectItem value='1'>
                                 {t('Common User')}
+                              </SelectItem>
+                              <SelectItem value='6'>
+                                {t('Finance Officer')}
                               </SelectItem>
                               <SelectItem value='10'>{t('Admin')}</SelectItem>
                             </SelectGroup>
@@ -555,31 +718,107 @@ export function UsersMutateDrawer({
               )}
 
               {canEditAdminPermissions &&
-                targetIsAdmin &&
+                targetIsStaff &&
                 permissionCatalog.resources.length > 0 && (
                   <SideDrawerSection>
-                    <h3 className='text-sm font-medium'>
-                      {t('Admin Permissions')}
-                    </h3>
-                    <p className='text-muted-foreground text-xs'>
-                      {t(
-                        'Default administrator permissions can be overridden for this user.'
-                      )}
-                    </p>
+                    <div className='flex flex-wrap items-center justify-between gap-2'>
+                      <div>
+                        <h3 className='text-sm font-medium'>
+                          {t('Admin Permissions & Audit Reason Rules')}
+                        </h3>
+                        <p className='text-muted-foreground text-xs'>
+                          {t(
+                            'Select granted actions by module group, and toggle whether each granted action requires an audit purpose reason.'
+                          )}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className='flex flex-wrap gap-1.5'>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-7 text-xs'
+                        onClick={() => applyPermissionPreset('finance')}
+                      >
+                        {t('Finance Preset')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-7 text-xs'
+                        onClick={() => applyPermissionPreset('merchant_ops')}
+                      >
+                        {t('Merchant Ops Preset')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-7 text-xs'
+                        onClick={() => applyPermissionPreset('channel_ops')}
+                      >
+                        {t('Channel Ops Preset')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-7 text-xs'
+                        onClick={() => applyPermissionPreset('admin')}
+                      >
+                        {t('Standard Admin Preset')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        className='h-7 text-xs'
+                        onClick={() => applyPermissionPreset('read_only')}
+                      >
+                        {t('Read Only Preset')}
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='ghost'
+                        size='sm'
+                        className='h-7 text-xs text-muted-foreground'
+                        onClick={() => applyPermissionPreset('clear')}
+                      >
+                        {t('Clear')}
+                      </Button>
+                    </div>
+
                     <FormField
                       control={form.control}
                       name='admin_permissions'
                       render={({ field }) => {
                         const selected = normalizeAdminPermissions(
                           field.value,
-                          permissionCatalog
+                          permissionCatalog,
+                          effectiveRoleKey
+                        )
+                        const auditReasonSelected = normalizeAuditReasonRules(
+                          form.watch('admin_audit_reason_rules'),
+                          permissionCatalog,
+                          effectiveRoleKey
                         )
                         return (
                           <FormItem>
                             <PermissionMatrix
-                              resources={permissionCatalog.resources}
+                              groups={permissionGroups}
                               value={selected}
                               onChange={field.onChange}
+                              auditReasonRules={auditReasonSelected}
+                              onAuditReasonRulesChange={(nextRules) =>
+                                form.setValue(
+                                  'admin_audit_reason_rules',
+                                  nextRules,
+                                  { shouldDirty: true }
+                                )
+                              }
                             />
                             <FormMessage />
                           </FormItem>

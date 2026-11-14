@@ -19,6 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { MerchantAdmin } from '@/features/merchant/admin'
+import {
+  ADMIN_PERMISSION_ACTIONS,
+  ADMIN_PERMISSION_RESOURCES,
+  hasPermission,
+} from '@/lib/admin-permissions'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -26,7 +31,16 @@ export const Route = createFileRoute('/_authenticated/merchant-admin/')({
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()
 
-    if (!auth.user || auth.user.role < ROLE.ADMIN) {
+    if (
+      !auth.user ||
+      auth.user.role < ROLE.ADMIN ||
+      (auth.user.permissions?.admin_permissions !== undefined &&
+        !hasPermission(
+          auth.user,
+          ADMIN_PERMISSION_RESOURCES.MERCHANT,
+          ADMIN_PERMISSION_ACTIONS.READ
+        ))
+    ) {
       throw redirect({
         to: '/403',
       })

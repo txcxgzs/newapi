@@ -104,11 +104,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			service.RecordRequestPolicyTermination(c, newAPIError)
 			logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			clientError := newAPIError
+			if common.ShouldSanitizeUpstreamPrivacy(c) {
+				clientError = sanitizeClientRelayError(newAPIError, requestId)
+			} else {
+				clientError.SetMessage(common.MessageWithRequestId(clientError.Error(), requestId))
+			}
 			upstreamURLs := common.UpstreamAddresses(c)
 			if relayFormat != types.RelayFormatOpenAIRealtime && c.Writer.Written() &&
 				strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
-				writeRelayStreamError(c, relayFormat, newAPIError)
+				writeRelayStreamError(c, relayFormat, clientError)
 				return
 			}
 			if relayFormat != types.RelayFormatOpenAIRealtime {
@@ -116,15 +121,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
-				helper.WssError(c, ws, newAPIError.ToOpenAIError(upstreamURLs...))
+				helper.WssError(c, ws, clientError.ToOpenAIError(upstreamURLs...))
 			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				c.JSON(clientError.StatusCode, gin.H{
 					"type":  "error",
-					"error": newAPIError.ToClaudeError(upstreamURLs...),
+					"error": clientError.ToClaudeError(upstreamURLs...),
 				})
 			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(upstreamURLs...),
+				c.JSON(clientError.StatusCode, gin.H{
+					"error": clientError.ToOpenAIError(upstreamURLs...),
 				})
 			}
 		}
@@ -270,6 +275,42 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryLogStr := common.LogText("retry: %s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
 	}
+}
+
+func isClientSafeRelayError(apiErr *types.NewAPIError) bool {
+	if apiErr == nil || apiErr.GetErrorType() != types.ErrorTypeNewAPIError {
+		return false
+	}
+	switch apiErr.GetErrorCode() {
+	case types.ErrorCodeInvalidRequest,
+		types.ErrorCodeBadRequestBody,
+		types.ErrorCodeReadRequestBodyFailed,
+		types.ErrorCodeAccessDenied,
+		types.ErrorCodeSensitiveWordsDetected,
+		types.ErrorCodeInsufficientUserQuota,
+		types.ErrorCodePreConsumeTokenQuotaFailed,
+		types.ErrorCodeModelNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeClientRelayError(apiErr *types.NewAPIError, requestId string) *types.NewAPIError {
+	if isClientSafeRelayError(apiErr) {
+		apiErr.SetMessage(common.MessageWithRequestId(apiErr.Error(), requestId))
+		return apiErr
+	}
+	statusCode := apiErr.StatusCode
+	if statusCode <= 0 {
+		statusCode = http.StatusBadGateway
+	}
+	msg := common.MessageWithRequestId(fmt.Sprintf("Upstream service error (status %d)", statusCode), requestId)
+	return types.NewOpenAIError(
+		fmt.Errorf("%s", msg),
+		types.ErrorCodeBadResponse,
+		statusCode,
+	)
 }
 
 func writeRelayStreamError(c *gin.Context, format types.RelayFormat, apiError *types.NewAPIError) {

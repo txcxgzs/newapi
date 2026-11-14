@@ -20,6 +20,10 @@ import (
 )
 
 // 辅助函数
+func shouldSanitizeUpstreamPrivacy(info *relaycommon.RelayInfo) bool {
+	return info != nil && info.ChannelMeta != nil && info.ChannelSetting.UpstreamPrivacySanitize
+}
+
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
@@ -197,8 +201,19 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.ShouldIncludeUsage && !containStreamUsage {
-			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
-			response.SetSystemFingerprint(systemFingerprint)
+			sanitizeUpstream := shouldSanitizeUpstreamPrivacy(info)
+			respModel := model
+			respFingerprint := systemFingerprint
+			if sanitizeUpstream {
+				if info.OriginModelName != "" {
+					respModel = info.OriginModelName
+				}
+				respFingerprint = ""
+			}
+			response := helper.GenerateFinalUsageResponse(responseId, createAt, respModel, *usage)
+			if !sanitizeUpstream || respFingerprint != "" {
+				response.SetSystemFingerprint(respFingerprint)
+			}
 			helper.ObjectData(c, response)
 		}
 		helper.Done(c)

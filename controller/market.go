@@ -101,7 +101,8 @@ func buildMarketSnapshot() *marketSnapshot {
 	}
 	since := time.Now().Add(-24 * time.Hour).Unix()
 	var candles []model.MarketCandle
-	if err := model.DB.Where("interval = ? AND bucket_ts > ?", model.CandleInterval1h, since).
+	if err := model.DB.Where(&model.MarketCandle{Interval: model.CandleInterval1h}).
+		Where("bucket_ts > ?", since).
 		Order("bucket_ts ASC").Find(&candles).Error; err != nil {
 		logger.LogError(context.Background(), "market overview: query candles failed: "+err.Error())
 		return snapshot

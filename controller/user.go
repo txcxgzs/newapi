@@ -401,6 +401,7 @@ func GetUser(c *gin.Context) {
 		return
 	}
 	user.AdminPermissions = authz.Capabilities(user.Id, user.Role)
+	user.AdminAuditReasonRules = authz.ResolveAuditReasonRules(user.Role, common.RoleRootUser, user.GetAuditReasonRules())
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -478,6 +479,7 @@ func GetSelf(c *gin.Context) {
 	// consistent with the authorization decision made for this request.
 	permissions := calculateUserPermissions(userRole)
 	permissions["admin_permissions"] = authz.Capabilities(id, userRole)
+	permissions["audit_reason_actions"] = authz.ResolveAuditReasonRules(userRole, common.RoleRootUser, user.GetAuditReasonRules())
 	responseData["permissions"] = permissions
 
 	c.JSON(http.StatusOK, gin.H{
@@ -495,6 +497,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 	userSetting := user.GetSetting()
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
+	permissions["audit_reason_actions"] = authz.ResolveAuditReasonRules(user.Role, common.RoleRootUser, user.GetAuditReasonRules())
 	return map[string]any{
 		"id":                user.Id,
 		"username":          user.Username,
@@ -535,6 +538,14 @@ func calculateUserPermissions(userRole int) map[string]any {
 		// 超级管理员不需要边栏设置功能
 		permissions["sidebar_settings"] = false
 		permissions["sidebar_modules"] = map[string]any{}
+	} else if userRole == common.RoleFinanceUser {
+		permissions["sidebar_settings"] = false
+		permissions["sidebar_modules"] = map[string]any{
+			"admin": map[string]any{
+				"finance": true,
+				"setting": false,
+			},
+		}
 	} else if userRole == common.RoleAdminUser {
 		// 管理员可以设置边栏，但不包含系统设置功能
 		permissions["sidebar_settings"] = true
@@ -697,6 +708,15 @@ func UpdateUser(c *gin.Context) {
 		auditParams["password_reset"] = updatePassword
 		auditParams["admin_permissions_updated"] = updatedUser.AdminPermissions != nil
 	}
+	if updatePassword {
+		if _, ok := middleware.CheckAuditReason(c, authz.UserSensitiveWrite, middleware.DefaultAuditReasonMinLength); !ok {
+			return
+		}
+	} else {
+		if _, ok := middleware.CheckAuditReason(c, authz.UserWrite, middleware.DefaultAuditReasonMinLength); !ok {
+			return
+		}
+	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
@@ -704,7 +724,19 @@ func UpdateUser(c *gin.Context) {
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, originUser.Role, updatedUser.AdminPermissions)
 		authzTouched = touched
-		return err
+		if err != nil {
+			return err
+		}
+		if updatedUser.AdminAuditReasonRules != nil {
+			if c.GetInt("role") != common.RoleRootUser {
+				return fmt.Errorf("only root can update audit reason rules")
+			}
+			updatedUser.SetAuditReasonRules(updatedUser.AdminAuditReasonRules)
+			if err := tx.Model(&model.User{}).Where("id = ?", updatedUser.Id).Update("audit_reason_rules", updatedUser.AuditReasonRulesRaw).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		common.ApiError(c, err)
 		return
@@ -1023,8 +1055,8 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 	auditParams := map[string]any{"role": user.Role}
-	// Creating an administrator grants privilege just like promoting one.
-	if user.Role >= common.RoleAdminUser {
+	// Creating a finance officer or administrator grants privilege just like promoting one.
+	if user.Role == common.RoleFinanceUser || user.Role >= common.RoleAdminUser {
 		authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserCreate, service.AdminUserCreateContext{Role: user.Role})
 		if authorization == nil {
 			return
@@ -1037,6 +1069,9 @@ func CreateUser(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+	}
+	if user.AdminAuditReasonRules != nil && myRole == common.RoleRootUser {
+		cleanUser.SetAuditReasonRules(user.AdminAuditReasonRules)
 	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -1069,8 +1104,9 @@ func CreateUser(c *gin.Context) {
 }
 
 func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, userRole int, permissions map[string]map[string]bool) (bool, error) {
+	hasManagedRole := userRole == common.RoleFinanceUser || userRole >= common.RoleAdminUser
 	if permissions == nil {
-		if userRole < common.RoleAdminUser && c.GetInt("role") == common.RoleRootUser {
+		if !hasManagedRole && c.GetInt("role") == common.RoleRootUser {
 			return true, authz.ClearUserAuthorizationInTx(tx, userID)
 		}
 		return false, nil
@@ -1078,7 +1114,7 @@ func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, 
 	if c.GetInt("role") != common.RoleRootUser {
 		return false, fmt.Errorf("only root can update admin permissions")
 	}
-	if userRole < common.RoleAdminUser {
+	if !hasManagedRole {
 		return true, authz.ClearUserAuthorizationInTx(tx, userID)
 	}
 	return true, authz.SetUserPermissionsInTx(tx, userID, permissions)
@@ -1163,6 +1199,20 @@ func ManageUser(c *gin.Context) {
 			"message": "",
 		})
 		return
+	case "promote_finance":
+		if myRole != common.RoleRootUser {
+			common.ApiErrorT(c, "Regular administrators cannot promote other users to finance officer")
+			return
+		}
+		if user.Role >= common.RoleAdminUser {
+			common.ApiErrorT(c, "Cannot assign finance role to an administrator")
+			return
+		}
+		if user.Role == common.RoleFinanceUser {
+			common.ApiErrorT(c, "This user is already a finance officer")
+			return
+		}
+		user.Role = common.RoleFinanceUser
 	case "promote":
 		if myRole != common.RoleRootUser {
 			common.ApiErrorT(c, "Regular administrators cannot promote other users to administrator")
@@ -1193,6 +1243,9 @@ func ManageUser(c *gin.Context) {
 
 	authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserManage, service.AdminUserManageContext{UserID: user.Id, Action: req.Action})
 	if authorization == nil {
+		return
+	}
+	if _, ok := middleware.CheckAuditReason(c, authz.UserSensitiveWrite, middleware.DefaultAuditReasonMinLength); !ok {
 		return
 	}
 	if req.Action == "demote" {

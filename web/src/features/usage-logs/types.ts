@@ -260,6 +260,7 @@ export interface LogOtherData {
     success?: boolean
     params?: Record<string, string>
   }
+  audit_reason?: string
   // Login audit fields (type=7); visible to the log owner
   login_method?: string
   user_agent?: string

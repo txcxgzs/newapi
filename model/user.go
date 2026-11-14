@@ -111,8 +111,36 @@ type User struct {
 	StripeCustomer       string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
 	CreatedAt            int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
 	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
-	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
-	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	AuthVersion           int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
+	AuditReasonRulesRaw   string                     `json:"-" gorm:"type:text;column:audit_reason_rules"`
+	AdminPermissions      map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	AdminAuditReasonRules map[string]map[string]bool `json:"audit_reason_rules,omitempty" gorm:"-:all"`
+}
+
+func (user *User) GetAuditReasonRules() map[string]map[string]bool {
+	if user == nil || strings.TrimSpace(user.AuditReasonRulesRaw) == "" {
+		return nil
+	}
+	var rules map[string]map[string]bool
+	if err := common.Unmarshal([]byte(user.AuditReasonRulesRaw), &rules); err != nil {
+		return nil
+	}
+	return rules
+}
+
+func (user *User) SetAuditReasonRules(rules map[string]map[string]bool) {
+	if user == nil {
+		return
+	}
+	if rules == nil {
+		user.AuditReasonRulesRaw = ""
+		return
+	}
+	encoded, err := common.Marshal(rules)
+	if err != nil {
+		return
+	}
+	user.AuditReasonRulesRaw = string(encoded)
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -251,7 +279,12 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 	}
 
 	// 管理员区域 - 根据角色决定
-	if userRole == common.RoleAdminUser {
+	if userRole == common.RoleFinanceUser {
+		defaultConfig["admin"] = map[string]any{
+			"enabled": true,
+			"finance": true,
+		}
+	} else if userRole == common.RoleAdminUser {
 		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]any{
 			"enabled":    true,

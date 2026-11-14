@@ -22,6 +22,7 @@ export const ROLE = {
   GUEST: 0, // 后续如果需要用到这个角色那就再加，同语先留一下
   USER: 1,
   MERCHANT: 2, // New API Pro：通过入驻审核的商家
+  FINANCE: 6, // 财务专员：仅财务中心查看、结算与提现打款审核
   ADMIN: 10,
   SUPER_ADMIN: 100,
 } as const
@@ -33,6 +34,7 @@ const DEFAULT_ROLE = ROLE.GUEST
 const ROLE_LABEL_KEYS: Record<RoleValue, string> = {
   [ROLE.SUPER_ADMIN]: 'Super Admin',
   [ROLE.ADMIN]: 'Admin',
+  [ROLE.FINANCE]: 'Finance Officer',
   [ROLE.MERCHANT]: 'Merchant',
   [ROLE.USER]: 'User',
   [ROLE.GUEST]: 'Guest',

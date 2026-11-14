@@ -20,6 +20,11 @@ import axios, { type AxiosRequestConfig } from 'axios'
 import { t } from 'i18next'
 
 import {
+  AUDIT_REASON_HEADER,
+  extractAuditReasonRequiredInfo,
+  promptAuditReason,
+} from '@/lib/audit-reason'
+import {
   applyAuthRotation,
   clearAuthentication,
   getFreshAuthHeaders,
@@ -41,6 +46,7 @@ declare module 'axios' {
     authRetry?: boolean
     acceptAuthRotation?: boolean
     singleUseAuthorization?: boolean
+    _auditReasonRetry?: boolean
   }
 }
 
@@ -95,6 +101,26 @@ api.interceptors.response.use(
     const config = error?.config as ApiRequestConfig | undefined
     const skipErrorHandler = config?.skipErrorHandler
     const status = error?.response?.status
+
+    if (status === 400 && config && !config._auditReasonRetry) {
+      const reasonInfo = extractAuditReasonRequiredInfo(error)
+      if (reasonInfo.required) {
+        const entered = await promptAuditReason({
+          resource: reasonInfo.resource,
+          action: reasonInfo.action,
+          minLength: reasonInfo.minLength,
+          summary: reasonInfo.message,
+        })
+        if (entered) {
+          config._auditReasonRetry = true
+          config.headers = {
+            ...config.headers,
+            [AUDIT_REASON_HEADER]: entered,
+          }
+          return api.request(config)
+        }
+      }
+    }
 
     if (status === 401) {
       if (config && !config.skipAuthRefresh && !config.authRetry) {

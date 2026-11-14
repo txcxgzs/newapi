@@ -19,9 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import { z } from 'zod'
 
 import {
+  ADMIN_ROLE_KEY,
+  FINANCE_ROLE_KEY,
   type PermissionCatalog,
   type AdminPermissionMatrix,
   normalizeAdminPermissions,
+  normalizeAuditReasonRules,
 } from '@/lib/admin-permissions'
 import { quotaUnitsToDollars } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
@@ -45,6 +48,9 @@ export const userFormSchema = z.object({
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
+  admin_audit_reason_rules: z
+    .record(z.string(), z.record(z.string(), z.boolean()))
+    .optional(),
 })
 
 export type UserFormValues = z.infer<typeof userFormSchema>
@@ -64,6 +70,7 @@ export const USER_FORM_DEFAULT_VALUES: UserFormValues = {
   remark: '',
   // Filled against the backend catalog at render time; see UsersMutateDrawer.
   admin_permissions: {},
+  admin_audit_reason_rules: {},
 }
 
 // ============================================================================
@@ -85,14 +92,20 @@ export function transformFormDataToPayload(
   }
 
   const role = userId === undefined ? data.role || 1 : (data.role ?? 0)
+  const roleKey = role === ROLE.FINANCE ? FINANCE_ROLE_KEY : ADMIN_ROLE_KEY
 
-  // Only send the permission matrix when the target is an admin and the catalog
-  // is available; without the catalog we cannot build a full matrix, so we omit
-  // the field (the backend then leaves existing permissions untouched).
-  if (role >= ROLE.ADMIN && catalog) {
+  // Only send the permission matrix when the target is an admin/finance user and
+  // the catalog is available.
+  if (role >= ROLE.FINANCE && catalog) {
     payload.admin_permissions = normalizeAdminPermissions(
       data.admin_permissions as AdminPermissionMatrix | undefined,
-      catalog
+      catalog,
+      roleKey
+    )
+    payload.admin_audit_reason_rules = normalizeAuditReasonRules(
+      data.admin_audit_reason_rules as AdminPermissionMatrix | undefined,
+      catalog,
+      roleKey
     )
   }
 
@@ -125,5 +138,6 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     group: user.group || DEFAULT_GROUP,
     remark: user.remark || '',
     admin_permissions: user.admin_permissions ?? {},
+    admin_audit_reason_rules: user.admin_audit_reason_rules ?? {},
   }
 }

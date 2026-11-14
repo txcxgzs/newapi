@@ -37,6 +37,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 	info.ObserveResponseModel(responsesResponse.Model)
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
+	responseBody = sanitizeResponsesPayloadModel(info, responseBody, "model")
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -87,6 +88,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
+			data = string(sanitizeResponsesPayloadModel(info, []byte(data), "response.model"))
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
 		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
@@ -112,6 +114,20 @@ func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte
 		return payload
 	}
 	patched, err := ojson.SetBytes(payload, path, int(createdAt))
+	if err != nil {
+		return payload
+	}
+	return patched
+}
+
+func sanitizeResponsesPayloadModel(info *relaycommon.RelayInfo, payload []byte, path string) []byte {
+	if !shouldSanitizeUpstreamPrivacy(info) || info.OriginModelName == "" {
+		return payload
+	}
+	if !ojson.GetBytes(payload, path).Exists() {
+		return payload
+	}
+	patched, err := ojson.SetBytes(payload, path, info.OriginModelName)
 	if err != nil {
 		return payload
 	}

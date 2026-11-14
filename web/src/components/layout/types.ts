@@ -35,6 +35,18 @@ type BaseNavItem = {
    */
   requiredRole?: number
   /**
+   * Roles explicitly excluded from seeing this sidebar item (e.g. Finance
+   * Officers above ROLE.MERCHANT numerically who are not merchants).
+   */
+  excludedRoles?: number[]
+  /**
+   * Optional fine-grained admin/finance permission required to show this item.
+   */
+  requiredPermission?: {
+    resource: string
+    action: string
+  }
+  /**
    * Maximum role allowed to see this item in the sidebar. When set, the item
    * is hidden for users whose role is above this threshold (see
    * `useSidebarView`), e.g. an entry point that only applies before the user

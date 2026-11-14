@@ -22,6 +22,7 @@ import type {
 } from '@/features/task-plugins/types'
 import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
+import { withAuditReasonHeaders } from '@/lib/audit-reason'
 import type { LocalizedTextValue } from '@/lib/localized-text'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -198,8 +199,14 @@ export async function searchChannels(
 /**
  * Get single channel by ID
  */
-export async function getChannel(id: number): Promise<GetChannelResponse> {
-  const res = await api.get(`/api/channel/${id}`)
+export async function getChannel(
+  id: number,
+  auditReason?: string
+): Promise<GetChannelResponse> {
+  const res = await api.get(
+    `/api/channel/${id}`,
+    auditReason ? withAuditReasonHeaders(auditReason) : undefined
+  )
   return res.data
 }
 

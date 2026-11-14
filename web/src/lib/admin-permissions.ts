@@ -25,8 +25,13 @@ export type AdminCapabilities = AdminPermissionMatrix
 
 export const ADMIN_PERMISSION_RESOURCES = {
   AUDIT: 'audit',
+  BILLING: 'billing',
   CHANNEL: 'channel',
+  FINANCE: 'finance',
+  MERCHANT: 'merchant',
+  REDEMPTION: 'redemption',
   TASK_PLUGIN: 'task_plugin',
+  USER: 'user',
 } as const
 
 export const ADMIN_PERMISSION_ACTIONS = {
@@ -36,10 +41,14 @@ export const ADMIN_PERMISSION_ACTIONS = {
   SENSITIVE_WRITE: 'sensitive_write',
   SECRET_VIEW: 'secret_view',
   BIND: 'bind',
+  REVIEW: 'review',
+  SETTLE: 'settle',
+  PAYOUT: 'payout',
 } as const
 
 // The role whose baseline grants are used as defaults in the permission editor.
 export const ADMIN_ROLE_KEY = 'admin'
+export const FINANCE_ROLE_KEY = 'finance'
 
 // The permission catalog (resources, actions, labels and role baselines) is owned
 // by the backend authz package and fetched from GET /api/authz/catalog. It is
@@ -49,11 +58,14 @@ export interface PermissionActionDef {
   action: string
   label_key: string
   description_key: string
+  sensitive?: boolean
+  default_audit_reason?: boolean
 }
 
 export interface PermissionResourceDef {
   resource: string
   label_key: string
+  group?: string
   actions: PermissionActionDef[]
 }
 
@@ -63,6 +75,7 @@ export interface PermissionRoleDef {
   built_in: boolean
   superuser: boolean
   grants: AdminPermissionMatrix
+  audit_reason_defaults?: AdminPermissionMatrix
 }
 
 export interface PermissionCatalog {
@@ -85,6 +98,26 @@ export function hasPermission(
   return user.permissions?.admin_permissions?.[resource]?.[action] === true
 }
 
+export function hasAnyPermission(
+  user: AuthUser | null | undefined,
+  resource: string,
+  actions: readonly string[]
+): boolean {
+  if (!user) return false
+  if (user.role === ROLE.SUPER_ADMIN) return true
+  return actions.some((action) => hasPermission(user, resource, action))
+}
+
+export function requiresAuditReason(
+  user: AuthUser | null | undefined,
+  resource: string,
+  action: string
+): boolean {
+  if (!user) return false
+  if (user.role >= ROLE.SUPER_ADMIN || user.role < ROLE.FINANCE) return false
+  return user.permissions?.audit_reason_actions?.[resource]?.[action] === true
+}
+
 // roleGrants returns the baseline grant matrix for the given role key.
 export function roleGrants(
   catalog: PermissionCatalog,
@@ -94,12 +127,13 @@ export function roleGrants(
 }
 
 // normalizeAdminPermissions produces a full matrix for the catalog, filling any
-// value missing from `value` with the admin role's baseline grant.
+// value missing from `value` with the role's baseline grant.
 export function normalizeAdminPermissions(
   value: AdminPermissionMatrix | null | undefined,
-  catalog: PermissionCatalog
+  catalog: PermissionCatalog,
+  roleKey: string = ADMIN_ROLE_KEY
 ): AdminPermissionMatrix {
-  const baseline = roleGrants(catalog, ADMIN_ROLE_KEY)
+  const baseline = roleGrants(catalog, roleKey)
   const normalized: AdminPermissionMatrix = {}
   for (const resource of catalog.resources) {
     const actions: Record<string, boolean> = {}
@@ -108,6 +142,28 @@ export function normalizeAdminPermissions(
         value?.[resource.resource]?.[action.action] ??
         baseline[resource.resource]?.[action.action] ??
         false
+    }
+    normalized[resource.resource] = actions
+  }
+  return normalized
+}
+
+export function normalizeAuditReasonRules(
+  value: AdminPermissionMatrix | null | undefined,
+  catalog: PermissionCatalog,
+  roleKey: string = ADMIN_ROLE_KEY
+): AdminPermissionMatrix {
+  const roleDefaults =
+    catalog.roles.find((role) => role.key === roleKey)?.audit_reason_defaults ??
+    {}
+  const normalized: AdminPermissionMatrix = {}
+  for (const resource of catalog.resources) {
+    const actions: Record<string, boolean> = {}
+    for (const action of resource.actions) {
+      actions[action.action] =
+        value?.[resource.resource]?.[action.action] ??
+        roleDefaults[resource.resource]?.[action.action] ??
+        Boolean(action.default_audit_reason)
     }
     normalized[resource.resource] = actions
   }

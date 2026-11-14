@@ -28,6 +28,20 @@ func CloseResponseBodyGracefully(httpResponse *http.Response) {
 // (managed separately) and X-Oneapi-Request-Id (to preserve the local instance
 // ID). When the upstream header is X-Oneapi-Request-Id, the value is captured
 // into the Gin context for later logging.
+func isSafeUpstreamResponseHeader(k string) bool {
+	switch {
+	case strings.EqualFold(k, "Content-Type"),
+		strings.EqualFold(k, "Cache-Control"),
+		strings.EqualFold(k, "Connection"),
+		strings.EqualFold(k, "Transfer-Encoding"),
+		strings.EqualFold(k, "X-Accel-Buffering"),
+		strings.EqualFold(k, "Content-Disposition"):
+		return true
+	default:
+		return false
+	}
+}
+
 func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 	if strings.EqualFold(k, "Content-Length") {
 		return false
@@ -37,6 +51,9 @@ func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 			c.Set(common.UpstreamRequestIdKey, v[0])
 		}
 		return false
+	}
+	if common.ShouldSanitizeUpstreamPrivacy(c) {
+		return isSafeUpstreamResponseHeader(k)
 	}
 	return true
 }

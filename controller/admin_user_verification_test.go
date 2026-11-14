@@ -193,7 +193,19 @@ func TestAdminUserRiskOperationsRequireProofBeforeMutation(t *testing.T) {
 // Casbin policy store, which the security fixture does not provision.
 func TestAdminUserRoutineEditsDoNotRequireProof(t *testing.T) {
 	_, identity, target := setupAdminUserTest(t)
-	response := adminUserRequest(http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":"managed-user","display_name":"Renamed","group":"default"}`, target.Id), "", identity, common.RoleAdminUser, nil, UpdateUser)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	body := fmt.Sprintf(`{"id":%d,"username":"managed-user","display_name":"Renamed","group":"default"}`, target.Id)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/user/", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("X-Audit-Reason", "Routine display name update test for operator accountability")
+	c.Set("id", identity.UserID)
+	c.Set("username", "enrollment-user")
+	c.Set("role", common.RoleAdminUser)
+	c.Set("session_id", identity.SessionID)
+	c.Set("auth_version", identity.UserAuthVersion)
+	c.Set("session_version", identity.SessionVersion)
+	UpdateUser(c)
 	var result securityEnrollmentResponse
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 	require.True(t, result.Success, response.Body.String())

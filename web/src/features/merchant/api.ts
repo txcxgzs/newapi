@@ -21,6 +21,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   ChannelQuote,
+  MerchantAppType,
   MerchantApplication,
   MerchantEarningsPage,
   MerchantLogsPage,
@@ -28,6 +29,7 @@ import type {
   MerchantOverview,
   MerchantPortalPools,
   MerchantPortalQuote,
+  MerchantProfile,
   MerchantReviewResult,
   MerchantRow,
   MerchantUpstreamProbeResult,
@@ -59,17 +61,43 @@ async function unwrap<T>(res: { data: unknown }): Promise<T> {
  * （相对平台标准价的折扣系数，0.1 = 一折），不填则由后端取默认值。
  */
 export async function submitMerchantApplication(body: {
-  site_name: string
-  site_url: string
-  site_key: string
+  app_type?: MerchantAppType
+  shop_name?: string
+  requested_shop_name?: string
+  platform_url?: string
+  operation_tenure?: string
+  site_name?: string
+  site_url?: string
+  site_key?: string
+  contact_name?: string
+  contact_info?: string
+  description?: string
+  payout_method?: string
+  payout_account?: string
+  payout_holder?: string
+  payout_qrcode?: string
+  agreed_terms?: boolean
   upstream_kind?: UpstreamKind
   group_name?: string
   group_desc?: string
   join_auto_group?: boolean
   rate_multiplier?: number
-  models: MerchantModelQuote[]
+  models?: MerchantModelQuote[]
 }): Promise<MerchantApplication> {
   return unwrap(await api.post('/api/merchant/apply', body))
+}
+
+export async function applyMerchantShopNameChange(body: {
+  requested_shop_name: string
+  description?: string
+}): Promise<MerchantApplication> {
+  return unwrap(
+    await api.post('/api/merchant/apply', {
+      app_type: 'profile_change',
+      requested_shop_name: body.requested_shop_name,
+      description: body.description,
+    })
+  )
 }
 
 export async function getMyMerchantApplication(): Promise<MerchantApplication | null> {
@@ -105,6 +133,24 @@ export async function getPlatformModels(): Promise<string[]> {
 
 export async function getMerchantSummary(): Promise<PortalSummary> {
   return unwrap(await api.get('/api/merchant/portal/summary'))
+}
+
+export async function getMerchantProfile(): Promise<MerchantProfile> {
+  return unwrap(await api.get('/api/merchant/portal/profile'))
+}
+
+export async function updateMerchantProfile(body: {
+  platform_url?: string
+  operation_tenure?: string
+  contact_name?: string
+  contact_info?: string
+  description?: string
+  payout_method?: string
+  payout_account?: string
+  payout_holder?: string
+  payout_qrcode?: string
+}): Promise<MerchantProfile> {
+  return unwrap(await api.put('/api/merchant/portal/profile', body))
 }
 
 export async function getMerchantEarnings(
@@ -208,7 +254,8 @@ export async function getMerchantWithdrawals(
 
 export async function createMerchantWithdrawal(body: {
   amount: number
-  account_info: string
+  payout_method?: string
+  account_info?: string
   note?: string
 }): Promise<MerchantWithdrawal> {
   return unwrap(await api.post('/api/merchant/portal/withdrawals', body))
@@ -281,7 +328,15 @@ export async function getMerchantOverview(): Promise<MerchantOverview> {
 
 export async function updateMerchant(
   id: number,
-  body: { profit_ratio?: number; status?: number }
+  body: {
+    profit_ratio?: number
+    status?: number
+    settle_hold_days?: number
+    min_withdraw?: number
+    admin_note?: string
+    contact_name?: string
+    contact_info?: string
+  }
 ): Promise<void> {
   await api.put(`/api/merchant_manage/${id}`, body)
 }

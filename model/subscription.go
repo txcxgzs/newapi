@@ -657,6 +657,18 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			"amount": fmt.Sprintf("%.2f", logMoney),
 			"method": logPaymentMethod,
 		}))
+		RecordFinanceLedgerBestEffort(&FinanceLedger{
+			LedgerNo:  "subscription:" + tradeNo,
+			Domain:    FinanceDomainPlatformRevenue,
+			UserId:    logUserId,
+			BizType:   FinanceBizSubscriptionPay,
+			Direction: FinanceDirIn,
+			AmountUSD: logMoney,
+			Money:     logMoney,
+			RefType:   "subscription_order",
+			RefId:     tradeNo,
+			Remark:    fmt.Sprintf("plan=%s method=%s", logPlanTitle, logPaymentMethod),
+		})
 	}
 	return nil
 }

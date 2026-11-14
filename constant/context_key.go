@@ -87,6 +87,10 @@ const (
 	// duplicate entries.
 	ContextKeyAuditLogged ContextKey = "audit_logged"
 
+	// ContextKeyAuditReason carries the validated operator purpose/reason text
+	// supplied via X-Audit-Reason on sensitive operations.
+	ContextKeyAuditReason ContextKey = "audit_reason"
+
 	// ContextKeyTokenAuditParams contains only the API token operation's safe metadata.
 	ContextKeyTokenAuditParams ContextKey = "token_audit_params"
 	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.

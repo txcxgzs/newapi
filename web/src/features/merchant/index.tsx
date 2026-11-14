@@ -16,7 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ChevronRight, RefreshCw } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ChevronRight,
+  Clock,
+  ExternalLink,
+  PencilLine,
+  QrCode,
+  RefreshCw,
+  ShieldAlert,
+  Store,
+} from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -58,11 +70,16 @@ import { formatCurrencyFromUSD, formatQuotaWithCurrency } from '@/lib/currency'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import {
+  getServerErrorMessage,
+  getServerErrorStatus,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { DEFAULT_CURRENCY_CONFIG, useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
+  applyMerchantShopNameChange,
   createMerchantWithdrawal,
   getMerchantEarnings,
   getMerchantLogs,
@@ -76,12 +93,20 @@ import {
 } from './api'
 import { MerchantApplyForm } from './apply-form'
 import { ChannelEditDialog } from './components/channel-edit-dialog'
+import { MerchantProfileSettingsDialog } from './components/profile-settings-dialog'
+import {
+  OPERATION_TENURE_OPTIONS,
+  isValidPayoutQrDataUrl,
+} from './lib/payout-qrcode'
+import { PAYOUT_METHOD_OPTIONS, getPayoutMethodLabel } from './payout-methods'
 import type {
   MerchantApplication,
   MerchantCustomModelPrice,
   MerchantPoolChannel,
   MerchantPoolGroup,
   MerchantPoolMeta,
+  MerchantProfile,
+  MerchantWallet,
 } from './types'
 
 /** 门户金额按系统货币展示，保留 4 位小数。 */
@@ -113,25 +138,45 @@ function formatLatency(v: number | undefined, hasCalls: boolean): string {
 export function Merchant() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const [showOnboardingForm, setShowOnboardingForm] = useState(false)
 
   const selfQuery = useQuery({
     queryKey: ['merchant', 'self'],
     queryFn: async () => {
-      const res = await api.get('/api/user/self')
+      const res = await api.get('/api/user/self', { skipErrorHandler: true })
       return requireServerSuccess(res.data).data as { role?: number }
     },
     staleTime: 60000,
+    meta: { errorToast: false },
   })
   const applicationQuery = useQuery({
     queryKey: ['merchant', 'application'],
     queryFn: getMyMerchantApplication,
+    meta: { errorToast: false },
   })
 
   const role = selfQuery.data?.role ?? 1
-  const isMerchant = role >= ROLE.MERCHANT
+  const isMerchantRole = role >= ROLE.MERCHANT
+  const isAdminRole = role >= ROLE.ADMIN
   const status = applicationQuery.data?.status
 
-  if (selfQuery.isLoading || applicationQuery.isLoading) {
+  // Prior to mounting MerchantPortal (and all of its tab queries), confirm an
+  // active MerchantProfile exists. Admins/super-admins pass `role >= MERCHANT`
+  // without a MerchantProfile, which would otherwise trigger repeated 403
+  // error toasts ("商家资料不存在").
+  const summaryQuery = useQuery({
+    queryKey: ['merchant', 'summary'],
+    queryFn: getMerchantSummary,
+    enabled: isMerchantRole,
+    refetchInterval: 30000,
+    meta: { errorToast: false },
+  })
+
+  if (
+    selfQuery.isLoading ||
+    applicationQuery.isLoading ||
+    (isMerchantRole && summaryQuery.isLoading)
+  ) {
     return (
       <div className='text-muted-foreground flex min-h-[60vh] items-center justify-center'>
         {t('Loading...')}
@@ -139,7 +184,7 @@ export function Merchant() {
     )
   }
 
-  if (!isMerchant) {
+  if (!isMerchantRole) {
     // 未入驻：没有申请记录或被拒后可再次申请
     if (status === undefined || status === 2) {
       return (
@@ -156,6 +201,7 @@ export function Merchant() {
             </p>
           )}
           <MerchantApplyForm
+            hasMerchantProfile={false}
             onSubmitted={() => {
               queryClient.invalidateQueries({
                 queryKey: ['merchant', 'application'],
@@ -181,7 +227,7 @@ export function Merchant() {
               {app?.status === 2 && (
                 <Badge variant='destructive'>{t('Rejected')}</Badge>
               )}
-              <span>{app?.site_name}</span>
+              <span>{app?.shop_name || app?.site_name}</span>
             </div>
             {app?.review_note && (
               <p className='text-muted-foreground text-sm'>
@@ -201,6 +247,181 @@ export function Merchant() {
     )
   }
 
+  if (summaryQuery.isError) {
+    const errStatus = getServerErrorStatus(summaryQuery.error)
+    const errMsg = getServerErrorMessage(summaryQuery.error)
+    const isSuspended = errMsg.includes('停用') || errMsg.toLowerCase().includes('suspend')
+    const isMissingProfile =
+      !isSuspended &&
+      (errStatus === 403 || errMsg.includes('商家资料不存在'))
+
+    if (isSuspended) {
+      return (
+        <div className='mx-auto w-full max-w-2xl px-4 py-12'>
+          <Card>
+            <CardContent className='flex flex-col items-center space-y-4 py-10 text-center'>
+              <div className='bg-destructive/10 text-destructive flex size-12 items-center justify-center rounded-2xl'>
+                <ShieldAlert className='size-6' />
+              </div>
+              <div className='space-y-1.5'>
+                <h1 className='text-xl font-semibold'>
+                  {t('Merchant Account Suspended')}
+                </h1>
+                <p className='text-muted-foreground max-w-md text-sm'>
+                  {t(
+                    'Your merchant account has been suspended by an administrator. Please contact platform support for details.'
+                  )}
+                </p>
+              </div>
+              {isAdminRole && (
+                <Button variant='outline' render={<Link to='/merchant-admin' />}>
+                  {t('Go to Merchant Management')}
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )
+    }
+
+    if (isMissingProfile) {
+      if (status === 0 && applicationQuery.data) {
+        const app = applicationQuery.data
+        return (
+          <div className='mx-auto w-full max-w-2xl px-4 py-10'>
+            <Card>
+              <CardContent className='space-y-4 py-8'>
+                <div className='flex items-center gap-3'>
+                  <div className='flex size-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400'>
+                    <Clock className='size-5' />
+                  </div>
+                  <div>
+                    <div className='flex items-center gap-2'>
+                      <h1 className='text-lg font-semibold'>
+                        {t('Merchant Application')}
+                      </h1>
+                      <Badge variant='secondary'>{t('Pending Review')}</Badge>
+                    </div>
+                    <p className='text-muted-foreground text-sm'>
+                      {app.shop_name || app.site_name}
+                    </p>
+                  </div>
+                </div>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Your onboarding application has been received and is awaiting administrator review.'
+                  )}
+                </p>
+                {isAdminRole && (
+                  <Button render={<Link to='/merchant-admin' />}>
+                    {t('Go to Merchant Management')}
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )
+      }
+
+      if (showOnboardingForm) {
+        return (
+          <div className='mx-auto w-full max-w-3xl px-4 py-8'>
+            <Button
+              variant='ghost'
+              size='sm'
+              className='text-muted-foreground hover:text-foreground -ml-2 mb-3'
+              onClick={() => setShowOnboardingForm(false)}
+            >
+              <ArrowLeft className='mr-1 size-4' />
+              {t('Back')}
+            </Button>
+            <h1 className='mb-2 text-2xl font-bold'>{t('Become a Merchant')}</h1>
+            <p className='text-muted-foreground mb-6 text-sm'>
+              {t(
+                'Verify your existing platform identity, lock your Shop Name, and bind your payout QR & account. Once approved, you enter the Merchant Portal to configure upstream channels and pricing groups.'
+              )}
+            </p>
+            <MerchantApplyForm
+              hasMerchantProfile={false}
+              onSubmitted={() => {
+                setShowOnboardingForm(false)
+                queryClient.invalidateQueries({ queryKey: ['merchant'] })
+              }}
+            />
+          </div>
+        )
+      }
+
+      return (
+        <div className='mx-auto w-full max-w-2xl px-4 py-12'>
+          <Card>
+            <CardContent className='flex flex-col items-center space-y-5 py-10 text-center'>
+              <div className='bg-primary/10 text-primary flex size-14 items-center justify-center rounded-2xl'>
+                <Store className='size-7' />
+              </div>
+              <div className='space-y-2'>
+                <h1 className='text-xl font-semibold tracking-tight'>
+                  {t('No Merchant Profile Yet')}
+                </h1>
+                <p className='text-muted-foreground max-w-lg text-sm leading-relaxed'>
+                  {isAdminRole
+                    ? t(
+                        'Your administrator account has not been onboarded as a merchant yet. To review applications or manage existing shops, visit Merchant Management; or apply below to operate your own merchant shop.'
+                      )
+                    : t(
+                        'Your merchant profile is not active yet. Submit an onboarding application to create your shop profile, configure upstream channels, and start earning.'
+                      )}
+                </p>
+              </div>
+              {status === 2 && applicationQuery.data?.review_note && (
+                <Alert variant='destructive' className='max-w-lg text-left'>
+                  <AlertTriangle className='size-4' />
+                  <AlertTitle>{t('Previous Application Rejected')}</AlertTitle>
+                  <AlertDescription className='text-xs'>
+                    {t('Review Note')}: {applicationQuery.data.review_note}
+                  </AlertDescription>
+                </Alert>
+              )}
+              <div className='flex flex-wrap items-center justify-center gap-3 pt-1'>
+                {isAdminRole && (
+                  <Button render={<Link to='/merchant-admin' />}>
+                    {t('Go to Merchant Management')}
+                  </Button>
+                )}
+                <Button
+                  variant={isAdminRole ? 'outline' : 'default'}
+                  onClick={() => setShowOnboardingForm(true)}
+                >
+                  {t('Apply to Become a Merchant')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )
+    }
+
+    return (
+      <div className='mx-auto w-full max-w-2xl px-4 py-12'>
+        <Card>
+          <CardContent className='flex flex-col items-center space-y-4 py-10 text-center'>
+            <AlertTriangle className='text-muted-foreground size-8' />
+            <div className='space-y-1'>
+              <h1 className='text-lg font-semibold'>
+                {t('Failed to load Merchant Portal')}
+              </h1>
+              <p className='text-muted-foreground text-sm'>{errMsg}</p>
+            </div>
+            <Button variant='outline' onClick={() => void summaryQuery.refetch()}>
+              <RefreshCw className='mr-1.5 size-4' />
+              {t('Retry')}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   return <MerchantPortal />
 }
 
@@ -208,6 +429,11 @@ function MerchantPortal() {
   const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [requestedShopName, setRequestedShopName] = useState('')
+  const [renameReason, setRenameReason] = useState('')
+  const [renameSubmitting, setRenameSubmitting] = useState(false)
 
   const summaryQuery = useQuery({
     queryKey: ['merchant', 'summary'],
@@ -217,15 +443,96 @@ function MerchantPortal() {
 
   const traffic = summaryQuery.data?.traffic_24h
   const wallet = summaryQuery.data?.wallet
+  const profile = summaryQuery.data?.profile
   const groups = summaryQuery.data?.groups_24h ?? []
   const totalGroupCalls = groups.reduce((sum, g) => sum + g.calls, 0)
+  const displayShopName =
+    profile?.shop_name ||
+    summaryQuery.data?.shop_name ||
+    summaryQuery.data?.site_name ||
+    t('Merchant Portal')
+  const displayPlatformUrl =
+    profile?.platform_url || summaryQuery.data?.platform_url || ''
+  const displayTenure =
+    profile?.operation_tenure || summaryQuery.data?.operation_tenure || ''
+  const tenureLabelKey = OPERATION_TENURE_OPTIONS.find(
+    (option) => option.value === displayTenure
+  )?.labelKey
+
+  async function submitShopRename() {
+    const nextName = requestedShopName.trim()
+    if (!nextName) {
+      toast.error(t('Please enter the new Shop Name'))
+      return
+    }
+    setRenameSubmitting(true)
+    try {
+      await applyMerchantShopNameChange({
+        requested_shop_name: nextName,
+        description: renameReason.trim() || undefined,
+      })
+      toast.success(t('Shop rename application submitted, waiting for review'))
+      setRenameOpen(false)
+      setRequestedShopName('')
+      setRenameReason('')
+      queryClient.invalidateQueries({ queryKey: ['merchant'] })
+    } catch (error) {
+      handleServerError(error, t('Failed to submit shop rename application'))
+    } finally {
+      setRenameSubmitting(false)
+    }
+  }
 
   return (
     <div className='mx-auto w-full max-w-6xl px-4 py-6'>
-      <h1 className='mb-1 text-2xl font-bold'>{t('Merchant Portal')}</h1>
-      <p className='text-muted-foreground mb-4 text-sm'>
-        {summaryQuery.data?.site_name} · {summaryQuery.data?.site_url}
-      </p>
+      <div className='mb-4 flex flex-wrap items-start justify-between gap-3'>
+        <div className='space-y-1'>
+          <div className='flex flex-wrap items-center gap-2'>
+            <div className='bg-primary/10 text-primary flex size-8 items-center justify-center rounded-lg'>
+              <Store className='size-4' />
+            </div>
+            <h1 className='text-2xl font-bold tracking-tight'>
+              {displayShopName}
+            </h1>
+            <Badge variant='secondary'>{t('Merchant Portal')}</Badge>
+            {displayTenure && (
+              <Badge variant='outline'>
+                {t('Tenure')}: {tenureLabelKey ? t(tenureLabelKey) : displayTenure}
+              </Badge>
+            )}
+          </div>
+          <div className='text-muted-foreground flex flex-wrap items-center gap-3 text-xs'>
+            {displayPlatformUrl && (
+              <a
+                href={displayPlatformUrl}
+                target='_blank'
+                rel='noreferrer'
+                className='text-foreground/80 hover:text-foreground inline-flex items-center gap-1 hover:underline'
+              >
+                <ExternalLink className='size-3' />
+                {t('Platform Website')}: {displayPlatformUrl}
+              </a>
+            )}
+            {summaryQuery.data?.site_url && (
+              <span>
+                {t('Primary Upstream')}: {summaryQuery.data.site_url}
+              </span>
+            )}
+          </div>
+        </div>
+        <Button
+          size='sm'
+          variant='outline'
+          onClick={() => {
+            setRequestedShopName('')
+            setRenameReason('')
+            setRenameOpen(true)
+          }}
+        >
+          <PencilLine className='mr-1.5 size-3.5' />
+          {t('Request Shop Rename')}
+        </Button>
+      </div>
       <div className='mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
         <Card>
           <CardContent className='py-4'>
@@ -262,9 +569,66 @@ function MerchantPortal() {
             <p className='text-muted-foreground text-xs'>
               {t('Profit ratio')}:{' '}
               {((summaryQuery.data?.profit_ratio ?? 0) * 100).toFixed(0)}%
+              {(wallet?.pending_balance ?? 0) > 0 && (
+                <>
+                  {' · '}
+                  {t('T+N pending')}: {formatUsd(wallet?.pending_balance)}
+                </>
+              )}
+              {(wallet?.frozen_balance ?? 0) > 0 && (
+                <>
+                  {' · '}
+                  {t('Frozen')}: {formatUsd(wallet?.frozen_balance)}
+                </>
+              )}
             </p>
           </CardContent>
         </Card>
+      </div>
+
+      <div className='mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/20 px-4 py-2.5 text-xs'>
+        <div className='flex flex-wrap items-center gap-3'>
+          {profile?.merchant_code && (
+            <Badge variant='outline' className='font-mono'>
+              {t('Code')}: {profile.merchant_code}
+            </Badge>
+          )}
+          <span className='text-muted-foreground'>
+            {t('Contact')}:{' '}
+            <span className='text-foreground'>
+              {profile?.contact_name || '--'}{' '}
+              {profile?.contact_info ? `(${profile.contact_info})` : ''}
+            </span>
+          </span>
+          <span className='text-muted-foreground'>
+            {t('Bound Payout')}:{' '}
+            <span className='text-foreground'>
+              {profile?.payout_method
+                ? `${t(getPayoutMethodLabel(profile.payout_method))} · ${profile.payout_account || '--'}`
+                : t('Not bound yet')}
+            </span>
+          </span>
+          {isValidPayoutQrDataUrl(profile?.payout_qrcode) && (
+            <Badge variant='outline' className='gap-1 text-[11px]'>
+              <QrCode className='size-3 text-emerald-500' />
+              {t('QR Bound')}
+            </Badge>
+          )}
+          <span className='text-muted-foreground'>
+            {t('Settlement')}: T+{profile?.settle_hold_days ?? 0}
+            {(profile?.min_withdraw ?? 0) > 0
+              ? ` · ${t('Min withdraw')}: ${formatUsd(profile?.min_withdraw)}`
+              : ''}
+          </span>
+        </div>
+        <Button
+          size='sm'
+          variant='outline'
+          className='h-7'
+          onClick={() => setProfileOpen(true)}
+        >
+          {t('Contact & Payout Profile')}
+        </Button>
       </div>
 
       {!!groups.length && (
@@ -328,12 +692,72 @@ function MerchantPortal() {
         <TabsContent value='withdrawals'>
           <MerchantWithdrawalsTab
             balance={wallet?.balance ?? 0}
+            wallet={wallet}
+            profile={profile}
             onChanged={() =>
               queryClient.invalidateQueries({ queryKey: ['merchant'] })
             }
           />
         </TabsContent>
       </Tabs>
+
+      <MerchantProfileSettingsDialog
+        open={profileOpen}
+        onOpenChange={setProfileOpen}
+        profile={profile}
+        onSaved={() =>
+          queryClient.invalidateQueries({ queryKey: ['merchant'] })
+        }
+      />
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className='max-w-md'>
+          <DialogHeader>
+            <DialogTitle>{t('Request Shop Rename')}</DialogTitle>
+            <DialogDescription>
+              {t('Current Shop Name: {{name}}', { name: displayShopName })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className='space-y-3'>
+            <div className='flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300'>
+              <AlertTriangle className='mt-0.5 size-3.5 shrink-0' />
+              <span>
+                {t(
+                  'Shop Name is used across the Merchant Portal header, Finance Center reconciliation, and group prefixes. Changes only take effect after administrator approval.'
+                )}
+              </span>
+            </div>
+            <div className='space-y-1.5'>
+              <Label htmlFor='merchant-rename-input'>{t('New Shop Name')}</Label>
+              <Input
+                id='merchant-rename-input'
+                value={requestedShopName}
+                onChange={(e) => setRequestedShopName(e.target.value)}
+                placeholder={t('Enter new unique shop name')}
+              />
+            </div>
+            <div className='space-y-1.5'>
+              <Label htmlFor='merchant-rename-reason'>
+                {t('Reason / Memo')}
+              </Label>
+              <Input
+                id='merchant-rename-reason'
+                value={renameReason}
+                onChange={(e) => setRenameReason(e.target.value)}
+                placeholder={t('Optional explanation for reviewers')}
+              />
+            </div>
+            <div className='flex justify-end gap-2 pt-1'>
+              <Button variant='outline' onClick={() => setRenameOpen(false)}>
+                {t('Cancel')}
+              </Button>
+              <Button disabled={renameSubmitting} onClick={submitShopRename}>
+                {renameSubmitting ? t('Submitting...') : t('Submit Application')}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -345,6 +769,9 @@ function MerchantPortal() {
  * 下自己的池子（渠道），第二层顶部可新增渠道。倍率调整在池子卡片内完成。
  */
 function formatPendingAppDescription(app: MerchantApplication): string {
+  if (app.app_type === 'profile_change') {
+    return `商户名称变更：${app.shop_name || app.site_name} → ${app.requested_shop_name || '--'}。审核通过前页面与对账仍沿用原名称。`
+  }
   const kind = app.app_type === 'group_change' ? '分组倍率 / 路由变更' : '新渠道 / 专属分组接入'
   const groupPart = app.group_name ? `，目标分组 ${app.group_name}` : ''
   const autoPart = app.join_auto_group ? '，申请加入 Auto 路由' : ''
@@ -1326,16 +1753,23 @@ function MerchantEarningsTab() {
 
 function MerchantWithdrawalsTab({
   balance,
+  wallet,
+  profile,
   onChanged,
 }: {
   balance: number
+  wallet?: MerchantWallet
+  profile?: MerchantProfile
   onChanged: () => void
 }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [open, setOpen] = useState(false)
+  const [qrPreview, setQrPreview] = useState<string | null>(null)
   const [amount, setAmount] = useState('')
+  const [payoutMethod, setPayoutMethod] = useState('')
   const [account, setAccount] = useState('')
+  const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
 
   const withdrawalsQuery = useQuery({
@@ -1344,17 +1778,27 @@ function MerchantWithdrawalsTab({
   })
   const items = withdrawalsQuery.data?.items ?? []
 
+  function openWithdrawDialog() {
+    setPayoutMethod(profile?.payout_method ?? '')
+    setAccount(profile?.payout_account ?? '')
+    setNote('')
+    setOpen(true)
+  }
+
   async function submit() {
     setSaving(true)
     try {
       await createMerchantWithdrawal({
         amount: Number(amount),
-        account_info: account,
+        payout_method: payoutMethod || undefined,
+        account_info: account.trim() || undefined,
+        note: note.trim() || undefined,
       })
       toast.success(t('Withdrawal request submitted'))
       setOpen(false)
       setAmount('')
       setAccount('')
+      setNote('')
       onChanged()
     } catch (error) {
       handleServerError(error, t('Failed to submit withdrawal request'))
@@ -1364,48 +1808,102 @@ function MerchantWithdrawalsTab({
   }
 
   const statusBadge = (s: number) => {
-    if (s === 0) return <Badge variant='secondary'>{t('Pending')}</Badge>
-    if (s === 1) return <Badge variant='default'>{t('Approved')}</Badge>
-    if (s === 2) return <Badge variant='default'>{t('Paid')}</Badge>
-    return <Badge variant='destructive'>{t('Rejected')}</Badge>
+    if (s === 0) {
+      return <Badge variant='secondary'>{t('Pending Review')}</Badge>
+    }
+    if (s === 1) {
+      return (
+        <Badge className='bg-sky-500/15 text-sky-700 hover:bg-sky-500/20 dark:text-sky-300'>
+          {t('Approved · Awaiting Payout')}
+        </Badge>
+      )
+    }
+    if (s === 2) {
+      return (
+        <Badge className='bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300'>
+          {t('Paid')}
+        </Badge>
+      )
+    }
+    return <Badge variant='destructive'>{t('Rejected · Refunded')}</Badge>
   }
 
   return (
     <div>
-      <div className='mb-3 flex items-center justify-between'>
+      <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
         <p className='text-muted-foreground text-sm'>
           {t('Available balance')}: {formatUsd(balance)}
+          {(wallet?.pending_balance ?? 0) > 0
+            ? ` · ${t('T+N pending')}: ${formatUsd(wallet?.pending_balance)}`
+            : ''}
+          {(wallet?.frozen_balance ?? 0) > 0
+            ? ` · ${t('Frozen')}: ${formatUsd(wallet?.frozen_balance)}`
+            : ''}
+          {(profile?.min_withdraw ?? 0) > 0
+            ? ` · ${t('Min withdraw')}: ${formatUsd(profile?.min_withdraw)}`
+            : ''}
         </p>
-        <Button onClick={() => setOpen(true)}>{t('Request Withdrawal')}</Button>
+        <Button onClick={openWithdrawDialog}>{t('Request Withdrawal')}</Button>
       </div>
       <div className='rounded-xl border'>
-        <div className='text-muted-foreground grid grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-2 border-b px-3 py-2 text-xs'>
-          <span>{t('Time')}</span>
+        <div className='text-muted-foreground grid grid-cols-[1.2fr_0.9fr_1.4fr_1.1fr_1.3fr] gap-2 border-b px-3 py-2 text-xs'>
+          <span>{t('Time / Trade No')}</span>
           <span>{t('Amount (USD)')}</span>
-          <span>{t('Account')}</span>
+          <span>{t('Account / QR')}</span>
           <span>{t('Status')}</span>
-          <span>{t('Review Note')}</span>
+          <span>{t('Review / Payment Proof')}</span>
         </div>
         <div className='divide-y'>
           {items.map((w) => (
             <div
               key={w.id}
-              className='grid grid-cols-[1fr_1fr_1fr_1fr_1fr] items-center gap-2 px-3 py-2 text-sm'
+              className='grid grid-cols-[1.2fr_0.9fr_1.4fr_1.1fr_1.3fr] items-center gap-2 px-3 py-2.5 text-sm'
             >
-              <span className='text-muted-foreground'>
-                {formatTimestampToDate(w.created_at)}
-              </span>
-              <span className='font-mono'>
+              <div className='min-w-0'>
+                <span className='text-muted-foreground block text-xs'>
+                  {formatTimestampToDate(w.created_at)}
+                </span>
+                {w.trade_no && (
+                  <span className='block truncate font-mono text-xs'>
+                    {w.trade_no}
+                  </span>
+                )}
+              </div>
+              <span className='font-mono font-medium'>
                 {formatCurrencyFromUSD(w.amount, {
                   digitsLarge: 2,
                   digitsSmall: 2,
                 })}
               </span>
-              <span className='truncate'>{w.account_info}</span>
+              <div className='flex min-w-0 items-center gap-2'>
+                <span className='truncate text-xs'>
+                  {w.payout_method ? `${t(getPayoutMethodLabel(w.payout_method))} · ` : ''}
+                  {w.account_info || '--'}
+                </span>
+                {isValidPayoutQrDataUrl(w.payout_qrcode) && (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    className='h-6 shrink-0 px-1.5 text-[11px]'
+                    onClick={() => setQrPreview(w.payout_qrcode || null)}
+                  >
+                    <QrCode className='mr-1 size-3' />
+                    {t('QR')}
+                  </Button>
+                )}
+              </div>
               <span>{statusBadge(w.status)}</span>
-              <span className='text-muted-foreground truncate'>
-                {w.review_note || '--'}
-              </span>
+              <div className='text-muted-foreground min-w-0 text-xs'>
+                {w.paid_proof && (
+                  <span className='text-foreground block truncate font-mono'>
+                    {t('Proof')}: {w.paid_proof}
+                  </span>
+                )}
+                <span className='block truncate'>
+                  {w.review_note || (!w.paid_proof ? '--' : '')}
+                </span>
+              </div>
             </div>
           ))}
           {!items.length && (
@@ -1427,12 +1925,58 @@ function MerchantWithdrawalsTab({
         )}
       </div>
 
+      <Dialog open={Boolean(qrPreview)} onOpenChange={(o) => !o && setQrPreview(null)}>
+        <DialogContent className='max-w-xs'>
+          <DialogHeader>
+            <DialogTitle>{t('Withdrawal QR Code Snapshot')}</DialogTitle>
+          </DialogHeader>
+          {qrPreview && (
+            <div className='flex justify-center py-2'>
+              <div className='rounded-xl border bg-white p-3'>
+                <img
+                  src={qrPreview}
+                  alt={t('Payout QR Code')}
+                  className='max-h-64 max-w-64 object-contain'
+                />
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('Request Withdrawal')}</DialogTitle>
           </DialogHeader>
           <div className='space-y-4'>
+            {isValidPayoutQrDataUrl(profile?.payout_qrcode) ? (
+              <div className='bg-muted/20 flex items-center gap-3 rounded-lg border p-2.5'>
+                <div className='shrink-0 rounded border bg-white p-1'>
+                  <img
+                    src={profile?.payout_qrcode}
+                    alt={t('Payout QR Code')}
+                    className='size-14 object-contain'
+                  />
+                </div>
+                <div className='text-muted-foreground text-xs'>
+                  <p className='text-foreground font-medium'>
+                    {t('Bound QR code will be attached')}
+                  </p>
+                  <p>
+                    {t(
+                      'Finance officers scan this snapshotted QR code when settling your payout.'
+                    )}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className='text-muted-foreground rounded-lg border border-dashed px-3 py-2 text-xs'>
+                {t(
+                  'Tip: Upload a payout QR code in "Contact & Payout Profile" first if you want finance officers to scan QR to pay.'
+                )}
+              </p>
+            )}
             <div className='space-y-1.5'>
               <Label htmlFor='merchant-withdrawal-amount'>
                 {t('Amount (USD)')}
@@ -1446,6 +1990,32 @@ function MerchantWithdrawalsTab({
               />
             </div>
             <div className='space-y-1.5'>
+              <Label htmlFor='merchant-withdrawal-method'>
+                {t('Payout Method')}
+              </Label>
+              <Select
+                items={PAYOUT_METHOD_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: t(option.labelKey),
+                }))}
+                value={payoutMethod}
+                onValueChange={(next) => {
+                  if (next !== null) setPayoutMethod(next)
+                }}
+              >
+                <SelectTrigger id='merchant-withdrawal-method' className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  {PAYOUT_METHOD_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {t(option.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className='space-y-1.5'>
               <Label htmlFor='merchant-withdrawal-account'>
                 {t('Payout Account')}
               </Label>
@@ -1456,7 +2026,23 @@ function MerchantWithdrawalsTab({
                 placeholder={t('Alipay / USDT / Bank card...')}
               />
             </div>
-            <Button onClick={submit} disabled={saving || !amount || !account}>
+            <div className='space-y-1.5'>
+              <Label htmlFor='merchant-withdrawal-note'>{t('Note')}</Label>
+              <Input
+                id='merchant-withdrawal-note'
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder={t('Optional memo')}
+              />
+            </div>
+            <Button
+              onClick={submit}
+              disabled={
+                saving ||
+                !amount ||
+                (!account.trim() && !profile?.payout_account)
+              }
+            >
               {t('Submit')}
             </Button>
           </div>

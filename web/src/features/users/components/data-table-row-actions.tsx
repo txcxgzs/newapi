@@ -67,6 +67,7 @@ const MANAGE_ACTION_TITLES: Record<AdminUserManageAction, string> = {
   disable: 'Verify to disable user',
   enable: 'Verify to enable user',
   promote: 'Verify to promote user',
+  promote_finance: 'Verify to assign Finance Officer role',
   demote: 'Verify to demote user',
 }
 
@@ -233,11 +234,20 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuItem>
         )}
 
-        {isAdmin && !isRoot && (
+        {(isAdmin || user.role === USER_ROLE.FINANCE) && !isRoot && (
           <DropdownMenuItem onClick={() => handleManage('demote')}>
             {t('Demote')}
             <DropdownMenuShortcut>
               <ArrowDown size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+
+        {user.role !== USER_ROLE.FINANCE && !isRoot && (
+          <DropdownMenuItem onClick={() => handleManage('promote_finance')}>
+            {t('Set as Finance Officer')}
+            <DropdownMenuShortcut>
+              <ArrowUp size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
         )}

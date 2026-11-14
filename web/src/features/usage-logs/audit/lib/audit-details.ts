@@ -31,6 +31,8 @@ import type { AuditLog } from '../api'
 const AUDIT_ROLE_NAMES: Record<number, string> = {
   [ROLE.GUEST]: 'guest',
   [ROLE.USER]: 'user',
+  [ROLE.MERCHANT]: 'merchant',
+  [ROLE.FINANCE]: 'finance',
   [ROLE.ADMIN]: 'admin',
   [ROLE.SUPER_ADMIN]: 'root',
 }
@@ -90,6 +92,8 @@ export function auditFieldLabel(key: string, t: TFunction): string {
       return t('Changed Fields')
     case 'changed':
       return t('State changed')
+    case 'audit_reason':
+      return t('Audit reason')
     case 'count':
       return t('Count')
     case 'total':
@@ -593,10 +597,17 @@ export function buildAuditDetails(
     })
   }
 
+  const auditReason =
+    typeof metadata.audit_reason === 'string' &&
+    metadata.audit_reason.trim() !== ''
+      ? metadata.audit_reason.trim()
+      : null
+
   const extra = { ...metadata }
   delete extra.op
   delete extra.admin_info
   delete extra.audit_info
+  delete extra.audit_reason
   delete extra.login_method
   delete extra.user_agent
   const adminExtra = { ...admin }
@@ -618,6 +629,7 @@ export function buildAuditDetails(
   }
   return {
     summary: operation?.summary ?? summary,
+    auditReason,
     tokenOperation,
     quotaOperation,
     operation,

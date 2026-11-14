@@ -117,6 +117,7 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { ensureAuditReason } from '@/lib/audit-reason'
 import {
   parseChannelConnectionInfo,
   type ChannelConnectionInfo,
@@ -337,6 +338,7 @@ const SENSITIVE_FORM_FIELDS = [
   'azure_responses_version',
   'force_format',
   'thinking_to_content',
+  'upstream_privacy_sanitize',
   'proxy',
   'http_protocol',
   'http2_connection_shards',
@@ -584,6 +586,57 @@ export function ChannelMutateDrawer({
     staleTime: 5 * 60 * 1000,
   })
 
+  const [channelAuditReason, setChannelAuditReason] = useState<string | null>(
+    null
+  )
+  const [channelAuditReadyKey, setChannelAuditReadyKey] = useState<string | null>(
+    null
+  )
+  const currentChannelAuditKey =
+    open && isEditing && channelId ? `channel:${channelId}` : null
+
+  useEffect(() => {
+    if (!currentChannelAuditKey || !channelId) {
+      setChannelAuditReason(null)
+      setChannelAuditReadyKey(null)
+      return
+    }
+    let cancelled = false
+    void ensureAuditReason(
+      currentUser,
+      ADMIN_PERMISSION_RESOURCES.CHANNEL,
+      'secret_view',
+      {
+        title: t('View channel details & configuration'),
+        summary: currentRow?.name
+          ? `${currentRow.name} (#${channelId})`
+          : `#${channelId}`,
+      }
+    ).then((reason) => {
+      if (cancelled) return
+      if (reason === null) {
+        onOpenChange(false)
+        return
+      }
+      setChannelAuditReason(reason)
+      setChannelAuditReadyKey(currentChannelAuditKey)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    channelId,
+    currentChannelAuditKey,
+    currentRow?.name,
+    currentUser,
+    onOpenChange,
+    t,
+  ])
+
+  const isChannelDetailAuditAuthorized =
+    Boolean(currentChannelAuditKey) &&
+    channelAuditReadyKey === currentChannelAuditKey
+
   // Fetch channel details if editing
   const {
     data: channelData,
@@ -593,8 +646,12 @@ export function ChannelMutateDrawer({
     refetch: refetchChannel,
   } = useQuery({
     queryKey: channelsQueryKeys.detail(channelId || 0),
-    queryFn: async () => requireServerSuccess(await getChannel(channelId || 0)),
-    enabled: open && isEditing && Boolean(channelId),
+    queryFn: async () =>
+      requireServerSuccess(
+        await getChannel(channelId || 0, channelAuditReason || undefined)
+      ),
+    enabled:
+      open && isEditing && Boolean(channelId) && isChannelDetailAuditAuthorized,
     meta: { errorToast: false },
   })
 
@@ -2069,6 +2126,32 @@ export function ChannelMutateDrawer({
             <Switch
               disabled={sensitiveLocked}
               checked={field.value}
+              onCheckedChange={field.onChange}
+            />
+          </FormControl>
+        </FormItem>
+      )}
+    />
+  )
+
+  const upstreamPrivacySanitizeFields = (
+    <FormField
+      control={form.control}
+      name='upstream_privacy_sanitize'
+      render={({ field }) => (
+        <FormItem className='flex items-center justify-between px-4 py-3'>
+          <div className='space-y-0.5'>
+            <FormLabel>{t('上游信息隐藏彻底清洗')}</FormLabel>
+            <FormDescription>
+              {t(
+                '开启后隐藏该渠道返回给调用方的上游域名、真实/映射模型名、报错正文与非必要响应头，并在普通用户日志中隐藏渠道与路由详情（管理员日志仍完整保留）'
+              )}
+            </FormDescription>
+          </div>
+          <FormControl>
+            <Switch
+              disabled={sensitiveLocked}
+              checked={field.value === true}
               onCheckedChange={field.onChange}
             />
           </FormControl>
@@ -5080,6 +5163,7 @@ export function ChannelMutateDrawer({
                 {formatFields}
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
+                {upstreamPrivacySanitizeFields}
                 {passthroughFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}

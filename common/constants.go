@@ -199,15 +199,16 @@ const (
 )
 
 const (
-	RoleGuestUser  = 0
-	RoleCommonUser = 1
-	RoleMerchant   = 2 // New API Pro：商家（通过入驻审核的普通用户）
-	RoleAdminUser  = 10
-	RoleRootUser   = 100
+	RoleGuestUser   = 0
+	RoleCommonUser  = 1
+	RoleMerchant    = 2 // New API Pro：商家（通过入驻审核的普通用户）
+	RoleFinanceUser = 6 // New API Pro：财务专员（专职负责财务中心、结算与提现打款）
+	RoleAdminUser   = 10
+	RoleRootUser    = 100
 )
 
 func IsValidateRole(role int) bool {
-	return role == RoleGuestUser || role == RoleCommonUser || role == RoleMerchant || role == RoleAdminUser || role == RoleRootUser
+	return role == RoleGuestUser || role == RoleCommonUser || role == RoleMerchant || role == RoleFinanceUser || role == RoleAdminUser || role == RoleRootUser
 }
 
 var (

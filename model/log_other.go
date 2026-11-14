@@ -10,11 +10,22 @@ import (
 )
 
 const (
-	logOtherAdminInfoKey    = "admin_info"
-	logOtherRootInfoKey     = "root_info"
-	logOtherAuditInfoKey    = "audit_info"
-	logOtherContentPartsKey = "content_parts"
+	logOtherAdminInfoKey              = "admin_info"
+	logOtherRootInfoKey               = "root_info"
+	logOtherAuditInfoKey              = "audit_info"
+	logOtherContentPartsKey           = "content_parts"
+	logOtherUpstreamPrivacyAdminKey   = "upstream_privacy_sanitize"
 )
+
+var upstreamPrivacySensitiveLogOtherKeys = []string{
+	"is_model_mapped",
+	"upstream_model_name",
+	"response_model",
+	"po",
+	"request_conversion_chain",
+	"final_request_format",
+	"request_plugins",
+}
 
 // legacySensitiveLogOtherKeys are historical top-level fields that must never
 // be written via SetPublic and must be stripped from user-visible projections.
@@ -230,6 +241,30 @@ func normalizeLegacyRejectReason(values map[string]json.RawMessage) bool {
 // values as RawMessage. This preserves integers larger than JavaScript's safe
 // range instead of round-tripping them through float64.
 func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
+	return formatLogOtherJSONWithPrivacy(value, visibility, false)
+}
+
+func logOtherHasUpstreamPrivacySanitize(value string) bool {
+	if value == "" {
+		return false
+	}
+	var values map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(value, &values); err != nil {
+		return false
+	}
+	rawAdmin, exists := values[logOtherAdminInfoKey]
+	if !exists || len(rawAdmin) == 0 {
+		return false
+	}
+	var adminInfo map[string]any
+	if err := common.UnmarshalJsonStr(string(rawAdmin), &adminInfo); err != nil {
+		return false
+	}
+	flag, _ := adminInfo[logOtherUpstreamPrivacyAdminKey].(bool)
+	return flag
+}
+
+func formatLogOtherJSONWithPrivacy(value string, visibility logOtherVisibility, sanitizeUpstream bool) string {
 	if value == "" {
 		return ""
 	}
@@ -254,6 +289,14 @@ func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
 			if _, exists := values[key]; exists {
 				delete(values, key)
 				changed = true
+			}
+		}
+		if sanitizeUpstream {
+			for _, key := range upstreamPrivacySensitiveLogOtherKeys {
+				if _, exists := values[key]; exists {
+					delete(values, key)
+					changed = true
+				}
 			}
 		}
 	} else {

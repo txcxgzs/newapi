@@ -244,6 +244,18 @@ func UpstreamAddresses(c *gin.Context) []string {
 	return addresses
 }
 
+// ShouldSanitizeUpstreamPrivacy reports whether the channel bound to the
+// current request context has upstream privacy sanitization enabled.
+func ShouldSanitizeUpstreamPrivacy(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if setting, ok := GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
+		return setting.UpstreamPrivacySanitize
+	}
+	return false
+}
+
 func GetContextKeyInt(c *gin.Context, key constant.ContextKey) int {
 	return c.GetInt(string(key))
 }

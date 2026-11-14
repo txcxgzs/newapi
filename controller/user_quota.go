@@ -2,13 +2,32 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+func checkQuotaAdjustmentAuditReason(c *gin.Context, req ManageRequest, params model.AuditFields) bool {
+	role := c.GetInt("role")
+	if role >= common.RoleRootUser || req.Id <= 0 || (req.Mode != "add" && req.Mode != "subtract" && req.Mode != "override") {
+		return true
+	}
+	var target model.User
+	if err := model.DB.Select("id, role").First(&target, req.Id).Error; err != nil || target.Role >= role {
+		return true
+	}
+	if _, ok := middleware.CheckAuditReason(c, authz.UserSensitiveWrite, middleware.DefaultAuditReasonMinLength); !ok {
+		params["failure_reason"] = "audit_reason_required"
+		return false
+	}
+	return true
+}
 
 func manageUserQuota(c *gin.Context, req ManageRequest) {
 	action := "generic"
@@ -42,6 +61,10 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 			}, c)
 		markAuditLogged(c)
 	}()
+
+	if !checkQuotaAdjustmentAuditReason(c, req, params) {
+		return
+	}
 
 	adjustment, err := model.AdjustUserQuota(req.Id, c.GetInt("role"), req.Mode, req.Value)
 	if err != nil {
@@ -79,6 +102,7 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 	operation := model.AuditOperation{Action: action, Params: params}
 	model.RecordLogWithAdminInfo(adjustment.UserID, model.LogTypeTopup,
 		auditContentEN(action, params), auditOperatorInfo(c), &operation, c)
+	recordAdminQuotaLedger(c, action, adjustment.UserID, adjustment.Before, adjustment.After, false)
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
@@ -116,6 +140,10 @@ func manageUserGiftQuota(c *gin.Context, req ManageRequest) {
 		markAuditLogged(c)
 	}()
 
+	if !checkQuotaAdjustmentAuditReason(c, req, params) {
+		return
+	}
+
 	adjustment, err := model.AdjustUserGiftQuota(req.Id, c.GetInt("role"), req.Mode, req.Value)
 	if err != nil {
 		switch {
@@ -152,5 +180,34 @@ func manageUserGiftQuota(c *gin.Context, req ManageRequest) {
 	operation := model.AuditOperation{Action: action, Params: params}
 	model.RecordLogWithAdminInfo(adjustment.UserID, model.LogTypeTopup,
 		auditContentEN(action, params), auditOperatorInfo(c), &operation, c)
+	recordAdminQuotaLedger(c, action, adjustment.UserID, adjustment.Before, adjustment.After, true)
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
+func recordAdminQuotaLedger(c *gin.Context, action string, targetUserId int, before int, after int, isGift bool) {
+	delta := int64(after - before)
+	dir := model.FinanceDirIn
+	if delta < 0 {
+		dir = model.FinanceDirOut
+	}
+	bizType := model.FinanceBizAdminQuotaAdjust
+	refType := "admin_quota"
+	if isGift {
+		bizType = model.FinanceBizAdminGiftQuotaAdjust
+		refType = "admin_gift_quota"
+	}
+	model.RecordFinanceLedgerBestEffort(&model.FinanceLedger{
+		Domain:        model.FinanceDomainUserQuota,
+		UserId:        targetUserId,
+		BizType:       bizType,
+		Direction:     dir,
+		AmountUSD:     float64(delta) / common.QuotaPerUnit,
+		QuotaDelta:    delta,
+		BeforeBalance: float64(before) / common.QuotaPerUnit,
+		AfterBalance:  float64(after) / common.QuotaPerUnit,
+		RefType:       refType,
+		RefId:         fmt.Sprintf("user:%d", targetUserId),
+		OperatorId:    c.GetInt("id"),
+		Remark:        action,
+	})
 }

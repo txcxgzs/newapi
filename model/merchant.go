@@ -17,8 +17,9 @@ const (
 
 // 商家申请类型
 const (
-	MerchantAppTypeChannel     = "channel"      // 入驻或新增渠道/分组
-	MerchantAppTypeGroupChange = "group_change" // 申请调整已有商家分组的倍率/描述/Auto路由
+	MerchantAppTypeChannel       = "channel"        // 入驻或新增渠道/分组
+	MerchantAppTypeGroupChange   = "group_change"   // 申请调整已有商家分组的倍率/描述/Auto路由
+	MerchantAppTypeProfileChange = "profile_change" // 申请变更商户名称（须管理员审核）
 )
 
 // 提现状态
@@ -31,14 +32,28 @@ const (
 
 // MerchantProfile 商家资料：审核通过后创建，与用户一对一。商家门户的数据隔离锚点。
 type MerchantProfile struct {
-	Id          int     `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserId      int     `json:"user_id" gorm:"not null;uniqueIndex"`
-	SiteName    string  `json:"site_name" gorm:"type:varchar(128);not null"`
-	SiteUrl     string  `json:"site_url" gorm:"type:varchar(255);not null"`
-	ProfitRatio float64 `json:"profit_ratio" gorm:"default:0.95"` // 商家分成比例 0..1，默认商家 95% / 平台 5%
-	Status      int     `json:"status" gorm:"default:1"`
-	CreatedAt   int64   `json:"created_at" gorm:"bigint"`
-	UpdatedAt   int64   `json:"updated_at" gorm:"bigint"`
+	Id              int     `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId          int     `json:"user_id" gorm:"not null;uniqueIndex"`
+	MerchantCode    string  `json:"merchant_code" gorm:"type:varchar(32);default:''"` // 稳定商户短码，如 m12
+	ShopName        string  `json:"shop_name" gorm:"type:varchar(128);default:''"`    // 店铺/商户名称（对外抬头/对账/分组前缀，更改须审核）
+	PlatformUrl     string  `json:"platform_url" gorm:"type:varchar(255);default:''"` // 商家自有平台官网/展示站网址（仅审核展示，不作 API 调用）
+	OperationTenure string  `json:"operation_tenure" gorm:"type:varchar(64);default:''"`
+	SiteName        string  `json:"site_name" gorm:"type:varchar(128);not null"`
+	SiteUrl         string  `json:"site_url" gorm:"type:varchar(255);not null"`
+	ContactName     string  `json:"contact_name" gorm:"type:varchar(64);default:''"`
+	ContactInfo     string  `json:"contact_info" gorm:"type:varchar(255);default:''"`
+	Description     string  `json:"description" gorm:"type:varchar(512);default:''"`
+	PayoutMethod    string  `json:"payout_method" gorm:"type:varchar(32);default:''"` // usdt_trc20 / usdt_bep20 / alipay / wechat / bank / other
+	PayoutAccount   string  `json:"payout_account" gorm:"type:varchar(512);default:''"`
+	PayoutHolder    string  `json:"payout_holder" gorm:"type:varchar(128);default:''"`
+	PayoutQrcode    string  `json:"payout_qrcode" gorm:"type:text"`  // 收款二维码 Data URL（仅图片 MIME）
+	SettleHoldDays  int     `json:"settle_hold_days" gorm:"default:0"` // T+N 结算延迟天数，0 表示即时入可用余额
+	MinWithdraw     float64 `json:"min_withdraw" gorm:"default:0"`     // 最低提现门槛（USD），0 表示不限制
+	AdminNote       string  `json:"admin_note" gorm:"type:varchar(512);default:''"`
+	ProfitRatio     float64 `json:"profit_ratio" gorm:"default:0.95"` // 商家分成比例 0..1，默认商家 95% / 平台 5%
+	Status          int     `json:"status" gorm:"default:1"`
+	CreatedAt       int64   `json:"created_at" gorm:"bigint"`
+	UpdatedAt       int64   `json:"updated_at" gorm:"bigint"`
 }
 
 func (MerchantProfile) TableName() string {
@@ -48,16 +63,29 @@ func (MerchantProfile) TableName() string {
 // MerchantApplication 商家入驻与分组变更申请：支持首次入驻、扩容渠道/自建专属分组，
 // 以及调整已有商家分组的倍率与 Auto 自动路由状态；管理员审核通过后写入原生分组配置并派生盘口。
 type MerchantApplication struct {
-	Id            int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserId        int    `json:"user_id" gorm:"not null;index"`
-	AppType       string `json:"app_type" gorm:"type:varchar(32);default:'channel'"`
-	SiteName      string `json:"site_name" gorm:"type:varchar(128);not null"`
-	SiteUrl       string `json:"site_url" gorm:"type:varchar(255);not null"`
-	SiteKey       string `json:"-" gorm:"type:text;not null"` // 上游密钥，永不回显；审核结束后清空
-	Models        string `json:"models" gorm:"type:text"`     // json: [{model,pool}]
-	GroupName     string `json:"group_name" gorm:"type:varchar(64);default:''"`
-	GroupDesc     string `json:"group_desc" gorm:"type:varchar(255);default:''"`
-	JoinAutoGroup bool   `json:"join_auto_group" gorm:"default:false"`
+	Id                int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId            int    `json:"user_id" gorm:"not null;index"`
+	AppType           string `json:"app_type" gorm:"type:varchar(32);default:'channel'"`
+	IsOnboarding      bool   `json:"is_onboarding" gorm:"default:true"`
+	ShopName          string `json:"shop_name" gorm:"type:varchar(128);default:''"`
+	RequestedShopName string `json:"requested_shop_name" gorm:"type:varchar(128);default:''"`
+	PlatformUrl       string `json:"platform_url" gorm:"type:varchar(255);default:''"`
+	OperationTenure   string `json:"operation_tenure" gorm:"type:varchar(64);default:''"`
+	SiteName          string `json:"site_name" gorm:"type:varchar(128);not null"`
+	SiteUrl           string `json:"site_url" gorm:"type:varchar(255);not null"`
+	SiteKey           string `json:"-" gorm:"type:text;not null"` // 上游密钥（AES-GCM 加密暂存），永不回显；审核结束后清空
+	ContactName       string `json:"contact_name" gorm:"type:varchar(64);default:''"`
+	ContactInfo       string `json:"contact_info" gorm:"type:varchar(255);default:''"`
+	Description       string `json:"description" gorm:"type:varchar(512);default:''"`
+	PayoutMethod      string `json:"payout_method" gorm:"type:varchar(32);default:''"`
+	PayoutAccount     string `json:"payout_account" gorm:"type:varchar(512);default:''"`
+	PayoutHolder      string `json:"payout_holder" gorm:"type:varchar(128);default:''"`
+	PayoutQrcode      string `json:"payout_qrcode" gorm:"type:text"`
+	AgreedTerms       bool   `json:"agreed_terms" gorm:"default:false"`
+	Models         string `json:"models" gorm:"type:text"` // json: [{model,pool}]
+	GroupName      string `json:"group_name" gorm:"type:varchar(64);default:''"`
+	GroupDesc      string `json:"group_desc" gorm:"type:varchar(255);default:''"`
+	JoinAutoGroup  bool   `json:"join_auto_group" gorm:"default:false"`
 	// RateMultiplier 申请时声明的分组倍率（GroupRatio）。
 	// 审核时管理员可覆盖；未填写（0）视为 1.0 原价。
 	RateMultiplier float64 `json:"rate_multiplier" gorm:"default:1"`
@@ -75,13 +103,16 @@ func (MerchantApplication) TableName() string {
 	return "merchant_applications"
 }
 
-// MerchantWithdrawal 商家提现申请。审批通过并打款后标记 paid 并扣减钱包余额。
+// MerchantWithdrawal 商家提现申请。审批通过并打款后标记 paid 并扣减钱包冻结余额。
 type MerchantWithdrawal struct {
 	Id             int     `json:"id" gorm:"primaryKey;autoIncrement"`
+	TradeNo        string  `json:"trade_no" gorm:"type:varchar(64);index;default:''"`
 	MerchantUserId int     `json:"merchant_user_id" gorm:"not null;index"`
 	Amount         float64 `json:"amount" gorm:"not null"` // USD
 	Status         int     `json:"status" gorm:"default:0"`
+	PayoutMethod   string  `json:"payout_method" gorm:"type:varchar(32);default:''"`
 	AccountInfo    string  `json:"account_info" gorm:"type:varchar(1024)"` // 收款方式说明（支付宝/USDT/银行卡等）
+	PayoutQrcode   string  `json:"payout_qrcode" gorm:"type:text"`          // 提现建单时的收款二维码快照
 	Note           string  `json:"note" gorm:"type:varchar(512)"`
 	ReviewNote     string  `json:"review_note" gorm:"type:varchar(512)"`
 	ReviewedBy     int     `json:"reviewed_by"`

@@ -48,7 +48,7 @@ func GetCandles(poolGroup string, modelName string, interval string, limit int) 
 		limit = 200
 	}
 	var candles []MarketCandle
-	err := DB.Where("pool_group = ? AND model_name = ? AND interval = ?", poolGroup, modelName, interval).
+	err := DB.Where(&MarketCandle{PoolGroup: poolGroup, ModelName: modelName, Interval: interval}).
 		Order("bucket_ts DESC").Limit(limit).Find(&candles).Error
 	if err != nil {
 		return nil, err
@@ -64,7 +64,7 @@ func GetCandles(poolGroup string, modelName string, interval string, limit int) 
 // 滚动聚合用它确定回补起点，避免上次运行崩溃后留下永久缺口。
 func FirstCandleBucketTs(interval string) int64 {
 	var candle MarketCandle
-	if err := DB.Where("interval = ?", interval).Order("bucket_ts ASC").First(&candle).Error; err != nil {
+	if err := DB.Where(&MarketCandle{Interval: interval}).Order("bucket_ts ASC").First(&candle).Error; err != nil {
 		return 0
 	}
 	return candle.BucketTs
@@ -73,7 +73,7 @@ func FirstCandleBucketTs(interval string) int64 {
 // GetLatestCandle 返回最近一根K线，用于行情列表的"现价"。
 func GetLatestCandle(poolGroup string, modelName string, interval string) (*MarketCandle, error) {
 	var candle MarketCandle
-	err := DB.Where("pool_group = ? AND model_name = ? AND interval = ?", poolGroup, modelName, interval).
+	err := DB.Where(&MarketCandle{PoolGroup: poolGroup, ModelName: modelName, Interval: interval}).
 		Order("bucket_ts DESC").First(&candle).Error
 	if err != nil {
 		return nil, err
@@ -98,6 +98,7 @@ func IsValidCandleInterval(interval string) bool {
 
 // CleanupCandlesBefore 清理指定周期早于 cutoffTs 的K线，控制表体积。
 func CleanupCandlesBefore(interval string, cutoffTs int64) error {
-	return DB.Where("interval = ? AND bucket_ts < ?", interval, cutoffTs).
+	return DB.Where(&MarketCandle{Interval: interval}).
+		Where("bucket_ts < ?", cutoffTs).
 		Delete(&MarketCandle{}).Error
 }

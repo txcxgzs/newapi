@@ -265,6 +265,7 @@ export const channelFormSchema = z
     // Channel extra settings (stored in setting JSON, not sent directly)
     force_format: z.boolean().optional(),
     thinking_to_content: z.boolean().optional(),
+    upstream_privacy_sanitize: z.boolean().optional(),
     proxy: z
       .string()
       .optional()
@@ -472,6 +473,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   // Channel extra settings
   force_format: false,
   thinking_to_content: false,
+  upstream_privacy_sanitize: false,
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
@@ -523,6 +525,7 @@ export function transformChannelToFormDefaults(
     request_plugins: [] as string[],
     force_format: false,
     thinking_to_content: false,
+    upstream_privacy_sanitize: false,
     proxy: '',
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
@@ -550,6 +553,7 @@ export function transformChannelToFormDefaults(
           : [],
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
+        upstream_privacy_sanitize: parsed.upstream_privacy_sanitize === true,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
@@ -704,6 +708,7 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
+    upstream_privacy_sanitize: formData.upstream_privacy_sanitize === true,
     proxy: formData.proxy?.trim() || '',
     pass_through_body_enabled: formData.pass_through_body_enabled === true,
     // A plugin channel shows the switch only when its plugin can serve it.

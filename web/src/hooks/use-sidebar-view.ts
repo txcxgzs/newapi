@@ -28,8 +28,9 @@ import type {
   SidebarBadges,
 } from '@/components/layout/types'
 import { useModelPricingIssueBadge } from '@/features/system-settings/models/pricing-issues'
+import { hasPermission } from '@/lib/admin-permissions'
 import { ROLE } from '@/lib/roles'
-import { useAuthStore } from '@/stores/auth-store'
+import { type AuthUser, useAuthStore } from '@/stores/auth-store'
 
 import { useSidebarConfig } from './use-sidebar-config'
 import { useSidebarData } from './use-sidebar-data'
@@ -44,33 +45,39 @@ const ROOT_VIEW_KEY = '__root'
  * neither stay visible for every role, so existing entries keep their
  * behaviour. Route-level guards still enforce access independently.
  */
-export function isNavItemVisibleForRole(item: NavItem, role: number): boolean {
+export function isNavItemVisibleForRole(
+  item: NavItem,
+  role: number,
+  user?: AuthUser | null
+): boolean {
+  if (item.excludedRoles?.includes(role)) {
+    return false
+  }
   if (item.requiredRole !== undefined && role < item.requiredRole) {
     return false
   }
   if (item.maxRole !== undefined && role > item.maxRole) {
     return false
   }
+  if (
+    item.requiredPermission &&
+    user?.permissions?.admin_permissions !== undefined &&
+    !hasPermission(
+      user,
+      item.requiredPermission.resource,
+      item.requiredPermission.action
+    )
+  ) {
+    return false
+  }
   return true
 }
 
-/**
- * Resolve the active sidebar view for the current location.
- *
- * - Returns the matching nested {@link SidebarView} (with its nav
- *   groups) when the URL belongs to a registered drill-in workspace.
- * - Otherwise returns the root navigation, narrowed by:
- *     · admin-only group visibility (role-based);
- *     · `useSidebarConfig` (admin × user `sidebar_modules` overlay).
- *
- * Nested views are intentionally NOT passed through `useSidebarConfig`
- * — those filters target known dashboard URLs only, and gating is
- * already enforced at the route level (`beforeLoad` redirects).
- */
 export function useSidebarView(): ResolvedSidebarView {
   const { t } = useTranslation()
   const pathname = useLocation({ select: (l) => l.pathname })
-  const userRole = useAuthStore((s) => s.auth.user?.role)
+  const authUser = useAuthStore((s) => s.auth.user)
+  const userRole = authUser?.role
   const modelPricingBadge = useModelPricingIssueBadge()
   const badges: SidebarBadges = { modelPricing: modelPricingBadge }
   const rootSidebarData = useSidebarData(badges)
@@ -78,16 +85,17 @@ export function useSidebarView(): ResolvedSidebarView {
 
   const rootNavGroups = useMemo<NavGroup[]>(() => {
     const role = userRole ?? ROLE.GUEST
-    const isAdmin = role >= ROLE.ADMIN
+    const isAdminOrFinance = role >= ROLE.FINANCE
     return configFilteredRoot
-      .filter((group) => (group.id === 'admin' ? isAdmin : true))
+      .filter((group) => (group.id === 'admin' ? isAdminOrFinance : true))
       .map((group) => {
         const items = group.items.filter((item) =>
-          isNavItemVisibleForRole(item, role)
+          isNavItemVisibleForRole(item, role, authUser)
         )
         return items.length === group.items.length ? group : { ...group, items }
       })
-  }, [configFilteredRoot, userRole])
+      .filter((group) => group.items.length > 0)
+  }, [authUser, configFilteredRoot, userRole])
 
   const view = resolveSidebarView(pathname)
 

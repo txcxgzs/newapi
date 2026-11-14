@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { BarChart3 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { toIntlLocale } from '@/i18n/languages'
@@ -48,12 +49,13 @@ export function StockList({
   if (!stocks.length) {
     return (
       <div
-        className={
-          className ??
-          'text-muted-foreground flex h-64 items-center justify-center'
-        }
+        className={cn(
+          'text-muted-foreground flex h-64 flex-col items-center justify-center gap-2 px-4 text-center text-sm',
+          className
+        )}
       >
-        {t('No transaction data yet')}
+        <BarChart3 className='text-muted-foreground/50 size-8' />
+        <span>{t('No transaction data yet')}</span>
       </div>
     )
   }

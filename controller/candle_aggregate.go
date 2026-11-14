@@ -115,7 +115,7 @@ func RunCandleAggregation(ctx context.Context) *CandleAggSummary {
 // lastCandleBucketTs 返回某周期最新K线的桶起始时间，无数据返回 0。
 func lastCandleBucketTs(interval string) int64 {
 	var candle model.MarketCandle
-	err := model.DB.Where("interval = ?", interval).Order("bucket_ts DESC").First(&candle).Error
+	err := model.DB.Where(&model.MarketCandle{Interval: interval}).Order("bucket_ts DESC").First(&candle).Error
 	if err != nil {
 		return 0
 	}
@@ -205,8 +205,9 @@ func aggregateOneMinuteBucket(ctx context.Context, bucket int64) (int, int64, er
 // rollupCandles 把 src 周期K线滚动聚合成 dst 周期K线（如 1m → 5m/1h）。
 func rollupCandles(srcInterval, dstInterval string, dstSeconds int64, fromTs, toTs int64) int {
 	var src []model.MarketCandle
-	if err := model.DB.Where("interval = ? AND bucket_ts >= ? AND bucket_ts < ?",
-		srcInterval, fromTs, toTs).Order("bucket_ts ASC").Find(&src).Error; err != nil {
+	if err := model.DB.Where(&model.MarketCandle{Interval: srcInterval}).
+		Where("bucket_ts >= ? AND bucket_ts < ?", fromTs, toTs).
+		Order("bucket_ts ASC").Find(&src).Error; err != nil {
 		return 0
 	}
 	type key struct {

@@ -26,7 +26,11 @@ export const Route = createFileRoute('/_authenticated/merchant/')({
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()
 
-    if (!auth.user || auth.user.role < ROLE.MERCHANT) {
+    if (
+      !auth.user ||
+      auth.user.role < ROLE.MERCHANT ||
+      auth.user.role === ROLE.FINANCE
+    ) {
       throw redirect({
         to: '/403',
       })

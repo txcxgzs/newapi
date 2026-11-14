@@ -14,6 +14,7 @@ type AuditOther struct {
 	Op          *AuditOperation   `json:"op,omitempty"`
 	AdminInfo   *AuditAdminInfo   `json:"admin_info,omitempty"`
 	AuditInfo   *AuditRequestInfo `json:"audit_info,omitempty"`
+	AuditReason string            `json:"audit_reason,omitempty"`
 	RootInfo    AuditFields       `json:"root_info,omitempty"`
 	LoginMethod string            `json:"login_method,omitempty"`
 	UserAgent   string            `json:"user_agent,omitempty"`

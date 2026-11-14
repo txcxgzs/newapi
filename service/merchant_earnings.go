@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -66,18 +68,36 @@ func creditMerchantEarning(ctx context.Context, channelId int, logId int, modelN
 		return
 	}
 
-	amount := float64(quota) / common.QuotaPerUnit * profile.ProfitRatio
+	grossAmount := float64(quota) / common.QuotaPerUnit
+	amount := grossAmount * profile.ProfitRatio
 	if amount <= 0 {
 		return
 	}
+	commission := math.Max(0, grossAmount-amount)
+	now := time.Now().Unix()
+	status := model.MerchantEarningSettled
+	var settleAt int64
+	var settledAt int64
+	if profile.SettleHoldDays > 0 {
+		status = model.MerchantEarningUnsettled
+		settleAt = now + int64(profile.SettleHoldDays)*86400
+	} else {
+		settledAt = now
+	}
 
 	earning := &model.MerchantEarning{
-		MerchantUserId: merchantId,
-		ChannelId:      channelId,
-		LogId:          logId,
-		Amount:         amount,
-		ModelName:      modelName,
-		DedupKey:       dedupKey,
+		MerchantUserId:   merchantId,
+		ChannelId:        channelId,
+		LogId:            logId,
+		GrossAmount:      grossAmount,
+		Amount:           amount,
+		CommissionAmount: commission,
+		Status:           status,
+		SettleAt:         settleAt,
+		SettledAt:        settledAt,
+		ModelName:        modelName,
+		DedupKey:         dedupKey,
+		CreatedAt:        now,
 	}
 	if err := model.RecordMerchantEarning(nil, earning); err != nil {
 		logger.LogError(ctx, "merchant earning record failed: "+err.Error())

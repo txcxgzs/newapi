@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,6 +66,30 @@ const merchantRateMultiplierLimit = 100.0
 
 // merchantCustomPriceMax 自定义模型基准单价上限（美元/1M tokens）。
 const merchantCustomPriceMax = 10000.0
+
+func isValidPayoutMethod(method string) bool {
+	switch strings.TrimSpace(method) {
+	case "", "usdt_trc20", "usdt_bep20", "alipay", "wechat", "bank", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func formatProfilePayoutAccount(profile *model.MerchantProfile) string {
+	if profile == nil || strings.TrimSpace(profile.PayoutAccount) == "" {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if m := strings.TrimSpace(profile.PayoutMethod); m != "" {
+		parts = append(parts, m)
+	}
+	parts = append(parts, strings.TrimSpace(profile.PayoutAccount))
+	if h := strings.TrimSpace(profile.PayoutHolder); h != "" {
+		parts = append(parts, "("+h+")")
+	}
+	return strings.Join(parts, " | ")
+}
 
 func merchantCustomModelPrefix(userId int) string {
 	return fmt.Sprintf("m%d/", userId)
@@ -186,6 +211,39 @@ func getMerchantCustomModelPricesSnapshot(userId int) map[string]merchantCustomP
 	return out
 }
 
+const maxPayoutQrcodeLength = 550000
+
+func validatePayoutQrcode(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > maxPayoutQrcodeLength {
+		return "", errors.New("收款二维码图片过大，请上传小于 400KB 的图片")
+	}
+	lower := strings.ToLower(trimmed)
+	validPrefix := strings.HasPrefix(lower, "data:image/png;base64,") ||
+		strings.HasPrefix(lower, "data:image/jpeg;base64,") ||
+		strings.HasPrefix(lower, "data:image/jpg;base64,") ||
+		strings.HasPrefix(lower, "data:image/webp;base64,")
+	if !validPrefix {
+		return "", errors.New("收款二维码仅支持 PNG、JPG 或 WebP 图片")
+	}
+	return trimmed, nil
+}
+
+func validatePlatformUrl(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	parsed, err := url.ParseRequestURI(trimmed)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.TrimSpace(parsed.Host) == "" {
+		return "", errors.New("平台官网地址格式不正确，请以 http:// 或 https:// 开头")
+	}
+	return trimmed, nil
+}
+
 func validateMerchantSiteNameUnique(userId int, siteName string) error {
 	trimmed := strings.TrimSpace(siteName)
 	if trimmed == "" {
@@ -193,7 +251,7 @@ func validateMerchantSiteNameUnique(userId int, siteName string) error {
 	}
 	var profileCount int64
 	if err := model.DB.Model(&model.MerchantProfile{}).
-		Where("user_id <> ? AND site_name = ?", userId, trimmed).
+		Where("user_id <> ? AND (site_name = ? OR shop_name = ?)", userId, trimmed, trimmed).
 		Count(&profileCount).Error; err != nil {
 		return err
 	}
@@ -202,7 +260,7 @@ func validateMerchantSiteNameUnique(userId int, siteName string) error {
 	}
 	var appCount int64
 	if err := model.DB.Model(&model.MerchantApplication{}).
-		Where("user_id <> ? AND status = ? AND site_name = ?", userId, model.MerchantApplicationPending, trimmed).
+		Where("user_id <> ? AND status = ? AND (site_name = ? OR shop_name = ? OR requested_shop_name = ?)", userId, model.MerchantApplicationPending, trimmed, trimmed, trimmed).
 		Count(&appCount).Error; err != nil {
 		return err
 	}
@@ -413,20 +471,143 @@ func writeMerchantGroupValidationError(c *gin.Context, err error) {
 func PostMerchantApplication(c *gin.Context) {
 	userId := c.GetInt("id")
 	var req struct {
-		SiteName       string               `json:"site_name" binding:"required"`
-		SiteUrl        string               `json:"site_url" binding:"required"`
-		SiteKey        string               `json:"site_key" binding:"required"`
-		UpstreamKind   string               `json:"upstream_kind"`
-		GroupName      string               `json:"group_name"`
-		GroupDesc      string               `json:"group_desc"`
-		JoinAutoGroup  bool                 `json:"join_auto_group"`
-		RateMultiplier float64              `json:"rate_multiplier"`
-		Models         []merchantModelQuote `json:"models"`
+		AppType           string               `json:"app_type"`
+		ShopName          string               `json:"shop_name"`
+		RequestedShopName string               `json:"requested_shop_name"`
+		SiteName          string               `json:"site_name"`
+		PlatformUrl       string               `json:"platform_url"`
+		OperationTenure   string               `json:"operation_tenure"`
+		SiteUrl           string               `json:"site_url"`
+		SiteKey           string               `json:"site_key"`
+		UpstreamKind      string               `json:"upstream_kind"`
+		GroupName         string               `json:"group_name"`
+		GroupDesc         string               `json:"group_desc"`
+		JoinAutoGroup     bool                 `json:"join_auto_group"`
+		RateMultiplier    float64              `json:"rate_multiplier"`
+		ContactName       string               `json:"contact_name"`
+		ContactInfo       string               `json:"contact_info"`
+		Description       string               `json:"description"`
+		PayoutMethod      string               `json:"payout_method"`
+		PayoutAccount     string               `json:"payout_account"`
+		PayoutHolder      string               `json:"payout_holder"`
+		PayoutQrcode      string               `json:"payout_qrcode"`
+		AgreedTerms       bool                 `json:"agreed_terms"`
+		Models            []merchantModelQuote `json:"models"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误：站名、站址与密钥必填"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
+
+	existingProfile, profileErr := model.GetMerchantProfileByUserId(userId)
+	isOnboarding := profileErr != nil || existingProfile == nil
+
+	// 已入驻商家提交商户名称变更申请（须过审后生效，防止随心修改导致对账与分组前缀混乱）
+	if strings.TrimSpace(req.AppType) == model.MerchantAppTypeProfileChange {
+		if isOnboarding {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "请先完成商家入驻审核"})
+			return
+		}
+		requestedShopName := strings.TrimSpace(req.RequestedShopName)
+		if requestedShopName == "" {
+			requestedShopName = strings.TrimSpace(req.ShopName)
+		}
+		if requestedShopName == "" {
+			requestedShopName = strings.TrimSpace(req.SiteName)
+		}
+		if err := validateMerchantSiteNameUnique(userId, requestedShopName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		currentName := strings.TrimSpace(existingProfile.ShopName)
+		if currentName == "" {
+			currentName = strings.TrimSpace(existingProfile.SiteName)
+		}
+		if requestedShopName == currentName {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "新商户名称与当前名称一致，无需提交审核"})
+			return
+		}
+		app := &model.MerchantApplication{
+			UserId:            userId,
+			AppType:           model.MerchantAppTypeProfileChange,
+			ShopName:          currentName,
+			RequestedShopName: requestedShopName,
+			SiteName:          existingProfile.SiteName,
+			PlatformUrl:       existingProfile.PlatformUrl,
+			OperationTenure:   existingProfile.OperationTenure,
+			SiteUrl:           existingProfile.SiteUrl,
+			Description:       strings.TrimSpace(req.Description),
+			AgreedTerms:       true,
+			Models:            "[]",
+			Status:            model.MerchantApplicationPending,
+			CreatedAt:         time.Now().Unix(),
+		}
+		if err := createPendingMerchantApplication(app); err != nil {
+			if errors.Is(err, errMerchantApplicationPending) || errors.Is(err, gorm.ErrDuplicatedKey) || hasPendingMerchantApplication(userId) {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "已有待审核的申请"})
+				return
+			}
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, app)
+		return
+	}
+
+	payoutMethod := strings.TrimSpace(req.PayoutMethod)
+	if !isValidPayoutMethod(payoutMethod) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "不支持的结算收款方式"})
+		return
+	}
+	payoutQrcode, qrErr := validatePayoutQrcode(req.PayoutQrcode)
+	if qrErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": qrErr.Error()})
+		return
+	}
+	platformUrl, urlErr := validatePlatformUrl(req.PlatformUrl)
+	if urlErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": urlErr.Error()})
+		return
+	}
+	operationTenure := strings.TrimSpace(req.OperationTenure)
+
+	shopName := strings.TrimSpace(req.ShopName)
+	siteName := strings.TrimSpace(req.SiteName)
+	if !isOnboarding {
+		if shopName == "" {
+			shopName = strings.TrimSpace(existingProfile.ShopName)
+		}
+		if siteName == "" {
+			siteName = strings.TrimSpace(existingProfile.SiteName)
+		}
+	}
+	if shopName == "" {
+		shopName = siteName
+	}
+	if siteName == "" {
+		siteName = shopName
+	}
+	if err := validateMerchantSiteNameUnique(userId, shopName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	siteUrl := strings.TrimSpace(req.SiteUrl)
+	siteKey := strings.TrimSpace(req.SiteKey)
+	if !isOnboarding {
+		if siteUrl == "" || siteKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "扩容新增渠道时必须填写上游 API 地址与密钥"})
+			return
+		}
+		if len(req.Models) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "扩容申请必须至少选择一个要上架的模型"})
+			return
+		}
+	} else if siteKey != "" && siteUrl == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "填写了初始上游密钥时必须填写对应的中转 API 地址"})
+		return
+	}
+
 	for i := range req.Models {
 		name := strings.TrimSpace(req.Models[i].Model)
 		if name == "" {
@@ -442,21 +623,18 @@ func PostMerchantApplication(c *gin.Context) {
 		req.Models[i].Model = name
 		req.Models[i].Upstream = strings.TrimSpace(req.Models[i].Upstream)
 	}
-	if _, err := validateAndCollectCustomModelPrices(userId, req.Models); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
-		return
-	}
-	siteName := strings.TrimSpace(req.SiteName)
-	if err := validateMerchantSiteNameUnique(userId, siteName); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
-		return
+	if len(req.Models) > 0 {
+		if _, err := validateAndCollectCustomModelPrices(userId, req.Models); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 	}
 	if req.RateMultiplier < 0 || req.RateMultiplier > merchantRateMultiplierLimit {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "分组倍率不能为负数，且不能超过 100"})
 		return
 	}
 
-	groupName := normalizeMerchantGroupName(userId, siteName, req.GroupName)
+	groupName := normalizeMerchantGroupName(userId, shopName, req.GroupName)
 	if groupName != "" {
 		if err := validateMerchantGroupOwnership(userId, groupName, false); err != nil {
 			writeMerchantGroupValidationError(c, err)
@@ -464,14 +642,51 @@ func PostMerchantApplication(c *gin.Context) {
 		}
 	}
 
-	// 已是商家的用户提交的是"扩容申请"（在已有分组下新增渠道），允许提交；
-	// 未入驻的用户提交的是首次入驻申请。
-	if _, err := model.GetMerchantProfileByUserId(userId); err == nil {
-		if len(req.Models) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "扩容申请必须至少选择一个要上架的模型"})
+	contactName := strings.TrimSpace(req.ContactName)
+	contactInfo := strings.TrimSpace(req.ContactInfo)
+	description := strings.TrimSpace(req.Description)
+	payoutAccount := strings.TrimSpace(req.PayoutAccount)
+	payoutHolder := strings.TrimSpace(req.PayoutHolder)
+	if !isOnboarding {
+		if contactName == "" {
+			contactName = existingProfile.ContactName
+		}
+		if contactInfo == "" {
+			contactInfo = existingProfile.ContactInfo
+		}
+		if description == "" {
+			description = existingProfile.Description
+		}
+		if platformUrl == "" {
+			platformUrl = existingProfile.PlatformUrl
+		}
+		if operationTenure == "" {
+			operationTenure = existingProfile.OperationTenure
+		}
+		if payoutMethod == "" {
+			payoutMethod = existingProfile.PayoutMethod
+		}
+		if payoutAccount == "" {
+			payoutAccount = existingProfile.PayoutAccount
+		}
+		if payoutHolder == "" {
+			payoutHolder = existingProfile.PayoutHolder
+		}
+		if payoutQrcode == "" {
+			payoutQrcode = existingProfile.PayoutQrcode
+		}
+	}
+
+	encryptedKey := ""
+	if siteKey != "" {
+		var encErr error
+		encryptedKey, encErr = common.EncryptMerchantSecret(siteKey)
+		if encErr != nil {
+			common.ApiError(c, encErr)
 			return
 		}
 	}
+
 	rateMultiplier := req.RateMultiplier
 	if rateMultiplier <= 0 && groupName != "" && ratio_setting.ContainsGroupRatio(groupName) {
 		if existingRatio := ratio_setting.GetGroupRatio(groupName); existingRatio > 0 {
@@ -484,19 +699,31 @@ func PostMerchantApplication(c *gin.Context) {
 		return
 	}
 	app := &model.MerchantApplication{
-		UserId:         userId,
-		AppType:        model.MerchantAppTypeChannel,
-		SiteName:       strings.TrimSpace(req.SiteName),
-		SiteUrl:        strings.TrimSpace(req.SiteUrl),
-		SiteKey:        req.SiteKey,
-		Models:         string(modelsJson),
-		GroupName:      groupName,
-		GroupDesc:      strings.TrimSpace(req.GroupDesc),
-		JoinAutoGroup:  req.JoinAutoGroup,
-		RateMultiplier: normalizeRateMultiplier(rateMultiplier),
-		UpstreamKind:   string(service.ParseUpstreamKind(req.UpstreamKind)),
-		Status:         model.MerchantApplicationPending,
-		CreatedAt:      time.Now().Unix(),
+		UserId:          userId,
+		AppType:         model.MerchantAppTypeChannel,
+		IsOnboarding:    isOnboarding,
+		ShopName:        shopName,
+		SiteName:        siteName,
+		PlatformUrl:     platformUrl,
+		OperationTenure: operationTenure,
+		SiteUrl:         siteUrl,
+		SiteKey:         encryptedKey,
+		ContactName:     contactName,
+		ContactInfo:     contactInfo,
+		Description:     description,
+		PayoutMethod:    payoutMethod,
+		PayoutAccount:   payoutAccount,
+		PayoutHolder:    payoutHolder,
+		PayoutQrcode:    payoutQrcode,
+		AgreedTerms:     req.AgreedTerms || !isOnboarding,
+		Models:          string(modelsJson),
+		GroupName:       groupName,
+		GroupDesc:       strings.TrimSpace(req.GroupDesc),
+		JoinAutoGroup:   req.JoinAutoGroup,
+		RateMultiplier:  normalizeRateMultiplier(rateMultiplier),
+		UpstreamKind:    string(service.ParseUpstreamKind(req.UpstreamKind)),
+		Status:          model.MerchantApplicationPending,
+		CreatedAt:       time.Now().Unix(),
 	}
 	if err := createPendingMerchantApplication(app); err != nil {
 		if errors.Is(err, errMerchantApplicationPending) {
@@ -962,24 +1189,59 @@ func requireActiveMerchant(c *gin.Context) (*model.MerchantProfile, bool) {
 	return profile, true
 }
 
-// GetMerchantPortalSummary 商家门户总览：自己的调用量/成交额/成功率/钱包。
+// GetMerchantPortalSummary 商家门户总览：自己的调用量/成交额/成功率/钱包（含自动结算到期 T+N 分润）。
 func GetMerchantPortalSummary(c *gin.Context) {
 	profile, ok := requireActiveMerchant(c)
 	if !ok {
 		return
 	}
 	userId := profile.UserId
+	if profile.SettleHoldDays > 0 {
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			_, _, settleErr := model.SettleMerchantEarningsForUser(tx, userId, time.Now().Unix())
+			return settleErr
+		}); err != nil {
+			logger.LogWarn(c.Request.Context(), "merchant auto-settle failed: "+err.Error())
+		}
+	}
 	channelIds, err := model.GetMerchantChannelIds(userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
+	merchantCode := profile.MerchantCode
+	if merchantCode == "" {
+		merchantCode = fmt.Sprintf("m%d", userId)
+	}
+	effectiveShopName := strings.TrimSpace(profile.ShopName)
+	if effectiveShopName == "" {
+		effectiveShopName = strings.TrimSpace(profile.SiteName)
+	}
 	summary := gin.H{
-		"profit_ratio":  profile.ProfitRatio,
-		"site_name":     profile.SiteName,
-		"site_url":      profile.SiteUrl,
-		"channel_count": len(channelIds),
+		"profit_ratio":     profile.ProfitRatio,
+		"shop_name":        effectiveShopName,
+		"site_name":        effectiveShopName,
+		"platform_url":     profile.PlatformUrl,
+		"operation_tenure": profile.OperationTenure,
+		"site_url":         profile.SiteUrl,
+		"channel_count":    len(channelIds),
+		"profile": gin.H{
+			"merchant_code":    merchantCode,
+			"shop_name":        effectiveShopName,
+			"site_name":        effectiveShopName,
+			"platform_url":     profile.PlatformUrl,
+			"operation_tenure": profile.OperationTenure,
+			"contact_name":     profile.ContactName,
+			"contact_info":     profile.ContactInfo,
+			"description":      profile.Description,
+			"payout_method":    profile.PayoutMethod,
+			"payout_account":   profile.PayoutAccount,
+			"payout_holder":    profile.PayoutHolder,
+			"payout_qrcode":    profile.PayoutQrcode,
+			"settle_hold_days": profile.SettleHoldDays,
+			"min_withdraw":     profile.MinWithdraw,
+		},
 	}
 
 	// 读接口只读钱包：钱包不存在等价于余额为 0，不得顺手建行。
@@ -1668,38 +1930,183 @@ func GetMerchantPortalLogs(c *gin.Context) {
 	})
 }
 
-// PostMerchantWithdrawal 商家发起提现：冻结余额并建单。
+// GetMerchantPortalProfile 商家查看自身入驻档案与结算绑定信息。
+func GetMerchantPortalProfile(c *gin.Context) {
+	profile, ok := requireActiveMerchant(c)
+	if !ok {
+		return
+	}
+	common.ApiSuccess(c, profile)
+}
+
+// UpdateMerchantPortalProfile 商家维护联系人、平台展示信息与默认结算收款账户（商户名称变更须走审核）。
+func UpdateMerchantPortalProfile(c *gin.Context) {
+	profile, ok := requireActiveMerchant(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		PlatformUrl     *string `json:"platform_url"`
+		OperationTenure *string `json:"operation_tenure"`
+		ContactName     string  `json:"contact_name"`
+		ContactInfo     string  `json:"contact_info"`
+		Description     string  `json:"description"`
+		PayoutMethod    string  `json:"payout_method"`
+		PayoutAccount   string  `json:"payout_account"`
+		PayoutHolder    string  `json:"payout_holder"`
+		PayoutQrcode    *string `json:"payout_qrcode"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
+		return
+	}
+	payoutMethod := strings.TrimSpace(req.PayoutMethod)
+	if !isValidPayoutMethod(payoutMethod) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "不支持的结算收款方式"})
+		return
+	}
+	updates := map[string]any{
+		"contact_name":   strings.TrimSpace(req.ContactName),
+		"contact_info":   strings.TrimSpace(req.ContactInfo),
+		"description":    strings.TrimSpace(req.Description),
+		"payout_method":  payoutMethod,
+		"payout_account": strings.TrimSpace(req.PayoutAccount),
+		"payout_holder":  strings.TrimSpace(req.PayoutHolder),
+		"updated_at":     time.Now().Unix(),
+	}
+	if req.PlatformUrl != nil {
+		validatedUrl, urlErr := validatePlatformUrl(*req.PlatformUrl)
+		if urlErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": urlErr.Error()})
+			return
+		}
+		updates["platform_url"] = validatedUrl
+	}
+	if req.OperationTenure != nil {
+		updates["operation_tenure"] = strings.TrimSpace(*req.OperationTenure)
+	}
+	if req.PayoutQrcode != nil {
+		validatedQr, qrErr := validatePayoutQrcode(*req.PayoutQrcode)
+		if qrErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": qrErr.Error()})
+			return
+		}
+		updates["payout_qrcode"] = validatedQr
+	}
+	if err := model.DB.Model(&model.MerchantProfile{}).Where("id = ?", profile.Id).Updates(updates).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	updated, err := model.GetMerchantProfileByUserId(profile.UserId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, updated)
+}
+
+// PostMerchantWithdrawal 商家发起提现：冻结余额并建单，支持沿用默认绑定收款账户与收款二维码快照。
 func PostMerchantWithdrawal(c *gin.Context) {
 	profile, ok := requireActiveMerchant(c)
 	if !ok {
 		return
 	}
 	var req struct {
-		Amount      float64 `json:"amount" binding:"required"`
-		AccountInfo string  `json:"account_info" binding:"required"`
-		Note        string  `json:"note"`
+		Amount       float64 `json:"amount" binding:"required"`
+		PayoutMethod string  `json:"payout_method"`
+		AccountInfo  string  `json:"account_info"`
+		PayoutQrcode string  `json:"payout_qrcode"`
+		Note         string  `json:"note"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误：金额与收款方式必填"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误：金额必填"})
 		return
 	}
-	if req.Amount <= 0 {
+	if req.Amount <= 0 || math.IsNaN(req.Amount) || math.IsInf(req.Amount, 0) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "提现金额必须大于 0"})
 		return
 	}
+	if profile.MinWithdraw > 0 && req.Amount < profile.MinWithdraw {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": fmt.Sprintf("低于最低提现门槛（%.2f USD）", profile.MinWithdraw)})
+		return
+	}
+	payoutMethod := strings.TrimSpace(req.PayoutMethod)
+	if payoutMethod == "" {
+		payoutMethod = profile.PayoutMethod
+	}
+	if !isValidPayoutMethod(payoutMethod) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "不支持的结算收款方式"})
+		return
+	}
+	payoutQrcode := strings.TrimSpace(req.PayoutQrcode)
+	if payoutQrcode == "" {
+		payoutQrcode = strings.TrimSpace(profile.PayoutQrcode)
+	} else {
+		var qrErr error
+		payoutQrcode, qrErr = validatePayoutQrcode(payoutQrcode)
+		if qrErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": qrErr.Error()})
+			return
+		}
+	}
+	accountInfo := strings.TrimSpace(req.AccountInfo)
+	if accountInfo == "" {
+		accountInfo = formatProfilePayoutAccount(profile)
+	}
+	if accountInfo == "" && payoutQrcode != "" {
+		accountInfo = "收款二维码"
+	}
+	if accountInfo == "" && payoutQrcode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "请填写收款账号、上传收款二维码或在商户资料中绑定默认收款方式"})
+		return
+	}
+	now := time.Now().Unix()
 	withdrawal := &model.MerchantWithdrawal{
+		TradeNo:        fmt.Sprintf("MW%d%s", now, common.GetRandomString(6)),
 		MerchantUserId: profile.UserId,
 		Amount:         req.Amount,
-		AccountInfo:    req.AccountInfo,
-		Note:           req.Note,
+		PayoutMethod:   payoutMethod,
+		AccountInfo:    accountInfo,
+		PayoutQrcode:   payoutQrcode,
+		Note:           strings.TrimSpace(req.Note),
 		Status:         model.WithdrawalPending,
-		CreatedAt:      time.Now().Unix(),
+		CreatedAt:      now,
 	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if profile.SettleHoldDays > 0 {
+			if _, _, settleErr := model.SettleMerchantEarningsForUser(tx, profile.UserId, now); settleErr != nil {
+				return settleErr
+			}
+		}
+		walletBefore, _ := model.EnsureMerchantWallet(tx, profile.UserId)
+		beforeBal := 0.0
+		if walletBefore != nil {
+			beforeBal = walletBefore.Balance
+		}
 		if err := model.FreezeForWithdrawal(tx, profile.UserId, req.Amount); err != nil {
 			return err
 		}
-		return tx.Create(withdrawal).Error
+		if err := tx.Create(withdrawal).Error; err != nil {
+			return err
+		}
+		if tx.Migrator().HasTable(&model.FinanceLedger{}) {
+			return model.RecordFinanceLedger(tx, &model.FinanceLedger{
+				LedgerNo:      fmt.Sprintf("withdraw_freeze:%d", withdrawal.Id),
+				Domain:        model.FinanceDomainMerchantWallet,
+				UserId:        profile.UserId,
+				BizType:       model.FinanceBizWithdrawFreeze,
+				Direction:     model.FinanceDirFreeze,
+				AmountUSD:     req.Amount,
+				BeforeBalance: beforeBal,
+				AfterBalance:  math.Max(0, beforeBal-req.Amount),
+				RefType:       "merchant_withdrawal",
+				RefId:         withdrawal.TradeNo,
+				OperatorId:    profile.UserId,
+				Remark:        accountInfo,
+				CreatedAt:     now,
+			})
+		}
+		return nil
 	})
 	if err == model.ErrInsufficientBalance {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "钱包余额不足"})
@@ -1838,13 +2245,81 @@ func ReviewMerchantApplication(c *gin.Context) {
 	}
 
 	isGroupChange := preview.AppType == model.MerchantAppTypeGroupChange
+	isProfileChange := preview.AppType == model.MerchantAppTypeProfileChange
+	effectiveShopName := strings.TrimSpace(preview.ShopName)
+	if effectiveShopName == "" {
+		effectiveShopName = strings.TrimSpace(preview.SiteName)
+	}
+
+	// 分支 A0：商家申请变更商户名称（须经管理员过审）
+	if isProfileChange {
+		requestedName := strings.TrimSpace(preview.RequestedShopName)
+		if requestedName == "" {
+			requestedName = effectiveShopName
+		}
+		if approve {
+			if err := validateMerchantSiteNameUnique(preview.UserId, requestedName); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+		}
+		now := time.Now().Unix()
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			app, err := model.GetMerchantApplicationForUpdate(tx, appId)
+			if err != nil {
+				return err
+			}
+			if app.Status != model.MerchantApplicationPending {
+				return model.ErrMerchantApplicationHandled
+			}
+			app.ReviewNote = req.ReviewNote
+			app.ReviewedBy = adminId
+			app.ReviewedAt = now
+			if !approve {
+				app.Status = model.MerchantApplicationRejected
+				app.SiteKey = ""
+				return tx.Save(app).Error
+			}
+			app.Status = model.MerchantApplicationApproved
+			app.ShopName = requestedName
+			app.SiteName = requestedName
+			app.SiteKey = ""
+			if err := tx.Save(app).Error; err != nil {
+				return err
+			}
+			return tx.Model(&model.MerchantProfile{}).
+				Where("user_id = ?", app.UserId).
+				Updates(map[string]any{
+					"shop_name":  requestedName,
+					"site_name":  requestedName,
+					"updated_at": now,
+				}).Error
+		})
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "申请不存在"})
+			return
+		case errors.Is(err, model.ErrMerchantApplicationHandled):
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请已处理"})
+			return
+		case err != nil:
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, gin.H{
+			"app_type":   model.MerchantAppTypeProfileChange,
+			"shop_name":  requestedName,
+			"channel_id": 0,
+		})
+		return
+	}
 
 	targetGroup := strings.TrimSpace(preview.GroupName)
 	if req.GroupName != nil {
 		targetGroup = strings.TrimSpace(*req.GroupName)
 	}
 	if !isGroupChange && targetGroup != "" {
-		targetGroup = normalizeMerchantGroupName(preview.UserId, preview.SiteName, targetGroup)
+		targetGroup = normalizeMerchantGroupName(preview.UserId, effectiveShopName, targetGroup)
 	}
 	targetDesc := strings.TrimSpace(preview.GroupDesc)
 	if req.GroupDesc != nil {
@@ -1932,7 +2407,7 @@ func ReviewMerchantApplication(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
-		if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, preview.SiteName); err != nil {
+		if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, effectiveShopName); err != nil {
 			common.ApiError(c, fmt.Errorf("同步分组配置失败: %w", err))
 			return
 		}
@@ -1956,6 +2431,121 @@ func ReviewMerchantApplication(c *gin.Context) {
 		return
 	}
 
+	// 分支 B0：纯资质入驻审核（未附带首条上游渠道，审核通过后商家进入商家工作台自主接入渠道）
+	isQualificationOnly := preview.IsOnboarding && strings.TrimSpace(preview.SiteKey) == ""
+	if isQualificationOnly {
+		if approve {
+			if err := validateMerchantSiteNameUnique(preview.UserId, effectiveShopName); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+		}
+		now := time.Now().Unix()
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			app, err := model.GetMerchantApplicationForUpdate(tx, appId)
+			if err != nil {
+				return err
+			}
+			if app.Status != model.MerchantApplicationPending {
+				return model.ErrMerchantApplicationHandled
+			}
+			app.ReviewNote = req.ReviewNote
+			app.ReviewedBy = adminId
+			app.ReviewedAt = now
+			if !approve {
+				app.Status = model.MerchantApplicationRejected
+				app.SiteKey = ""
+				return tx.Save(app).Error
+			}
+			app.Status = model.MerchantApplicationApproved
+			app.ShopName = effectiveShopName
+			app.SiteName = effectiveShopName
+			app.SiteKey = ""
+			if err := tx.Save(app).Error; err != nil {
+				return err
+			}
+			if existing, profileErr := model.GetMerchantProfileByUserId(app.UserId); profileErr == nil && existing != nil {
+				profileUpdates := map[string]any{
+					"profit_ratio": profitRatio,
+					"updated_at":   now,
+				}
+				if existing.MerchantCode == "" {
+					profileUpdates["merchant_code"] = fmt.Sprintf("m%d", app.UserId)
+				}
+				if existing.ShopName == "" && effectiveShopName != "" {
+					profileUpdates["shop_name"] = effectiveShopName
+					profileUpdates["site_name"] = effectiveShopName
+				}
+				if existing.PlatformUrl == "" && app.PlatformUrl != "" {
+					profileUpdates["platform_url"] = app.PlatformUrl
+				}
+				if existing.OperationTenure == "" && app.OperationTenure != "" {
+					profileUpdates["operation_tenure"] = app.OperationTenure
+				}
+				if existing.PayoutQrcode == "" && app.PayoutQrcode != "" {
+					profileUpdates["payout_qrcode"] = app.PayoutQrcode
+				}
+				if err := tx.Model(&model.MerchantProfile{}).Where("id = ?", existing.Id).Updates(profileUpdates).Error; err != nil {
+					return err
+				}
+			} else {
+				profile := &model.MerchantProfile{
+					UserId:          app.UserId,
+					MerchantCode:    fmt.Sprintf("m%d", app.UserId),
+					ShopName:        effectiveShopName,
+					SiteName:        effectiveShopName,
+					PlatformUrl:     app.PlatformUrl,
+					OperationTenure: app.OperationTenure,
+					SiteUrl:         app.SiteUrl,
+					ContactName:     app.ContactName,
+					ContactInfo:     app.ContactInfo,
+					Description:     app.Description,
+					PayoutMethod:    app.PayoutMethod,
+					PayoutAccount:   app.PayoutAccount,
+					PayoutHolder:    app.PayoutHolder,
+					PayoutQrcode:    app.PayoutQrcode,
+					ProfitRatio:     profitRatio,
+					Status:          model.MerchantStatusActive,
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}
+				if err := tx.Create(profile).Error; err != nil {
+					return fmt.Errorf("创建商家资料失败: %w", err)
+				}
+			}
+			if _, err := model.EnsureMerchantWallet(tx, app.UserId); err != nil {
+				return fmt.Errorf("创建商家钱包失败: %w", err)
+			}
+			if err := tx.Model(&model.User{}).Where("id = ? AND role < ?", app.UserId, common.RoleAdminUser).
+				Update("role", common.RoleMerchant).Error; err != nil {
+				return fmt.Errorf("升级商家角色失败: %w", err)
+			}
+			return nil
+		})
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "申请不存在"})
+			return
+		case errors.Is(err, model.ErrMerchantApplicationHandled):
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请已处理"})
+			return
+		case err != nil:
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, gin.H{
+			"app_type":           model.MerchantAppTypeChannel,
+			"qualification_only": true,
+			"shop_name":          effectiveShopName,
+			"channel_id":         0,
+			"channel_type":       0,
+			"price_sync":         false,
+			"upstream_kind":      "",
+			"probe":              nil,
+		})
+		return
+	}
+
 	// 分支 B：首次入驻 / 扩容（新建渠道并关联专属分组或号池）
 	poolsToUse := make([]string, 0, len(req.Pools)+1)
 	seenPools := make(map[string]bool)
@@ -1974,7 +2564,7 @@ func ReviewMerchantApplication(c *gin.Context) {
 	priceSyncEnabled := false
 	var modelMappingJSON *string
 	if approve {
-		if err := validateMerchantSiteNameUnique(preview.UserId, preview.SiteName); err != nil {
+		if err := validateMerchantSiteNameUnique(preview.UserId, effectiveShopName); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
 			return
 		}
@@ -2012,11 +2602,16 @@ func ReviewMerchantApplication(c *gin.Context) {
 		if err := common.UnmarshalJsonStr(preview.Models, &quotes); err != nil {
 			quotes = nil // Sub2API 一类不提供报价时允许为空
 		}
+		plainSiteKey, decErr := common.DecryptMerchantSecret(preview.SiteKey)
+		if decErr != nil {
+			common.ApiError(c, fmt.Errorf("解密上游密钥失败: %w", decErr))
+			return
+		}
 		declared := service.ParseUpstreamKind(req.UpstreamKind)
 		if declared == service.UpstreamKindAuto {
 			declared = service.ParseUpstreamKind(preview.UpstreamKind)
 		}
-		probe = service.ProbeUpstream(c.Request.Context(), preview.SiteUrl, preview.SiteKey, declared)
+		probe = service.ProbeUpstream(c.Request.Context(), preview.SiteUrl, plainSiteKey, declared)
 		channelType = probe.ChannelType
 		if req.ChannelType != nil {
 			switch *req.ChannelType {
@@ -2114,6 +2709,8 @@ func ReviewMerchantApplication(c *gin.Context) {
 			return tx.Save(app).Error
 		}
 		app.Status = model.MerchantApplicationApproved
+		app.ShopName = effectiveShopName
+		app.SiteName = effectiveShopName
 		app.GroupName = targetGroup
 		app.GroupDesc = targetDesc
 		app.JoinAutoGroup = joinAuto
@@ -2122,12 +2719,16 @@ func ReviewMerchantApplication(c *gin.Context) {
 			app.UpstreamKind = string(probe.Kind)
 		}
 
+		plainAppKey, decErr := common.DecryptMerchantSecret(app.SiteKey)
+		if decErr != nil {
+			return fmt.Errorf("解密上游密钥失败: %w", decErr)
+		}
 		priceSync := priceSyncEnabled
 		autoRouting := true
 		channel := &model.Channel{
 			Type:              channelType,
-			Key:               app.SiteKey,
-			Name:              "商家:" + app.SiteName,
+			Key:               plainAppKey,
+			Name:              "商家:" + effectiveShopName,
 			Status:            common.ChannelStatusEnabled,
 			CreatedTime:       time.Now().Unix(),
 			BaseURL:           &app.SiteUrl,
@@ -2149,21 +2750,62 @@ func ReviewMerchantApplication(c *gin.Context) {
 
 		now := time.Now().Unix()
 
-		// 扩容申请：商家资料已存在时复用，不重复创建（唯一索引会冲突）
+		// 扩容申请：商家资料已存在时复用，不重复创建（唯一索引会冲突）；若原资料缺联系/收款信息则顺便补齐
 		if existing, profileErr := model.GetMerchantProfileByUserId(app.UserId); profileErr == nil && existing != nil {
+			profileUpdates := map[string]any{
+				"profit_ratio": profitRatio,
+				"updated_at":   now,
+			}
+			if existing.MerchantCode == "" {
+				profileUpdates["merchant_code"] = fmt.Sprintf("m%d", app.UserId)
+			}
+			if existing.ShopName == "" && effectiveShopName != "" {
+				profileUpdates["shop_name"] = effectiveShopName
+			}
+			if existing.PlatformUrl == "" && app.PlatformUrl != "" {
+				profileUpdates["platform_url"] = app.PlatformUrl
+			}
+			if existing.OperationTenure == "" && app.OperationTenure != "" {
+				profileUpdates["operation_tenure"] = app.OperationTenure
+			}
+			if existing.ContactName == "" && app.ContactName != "" {
+				profileUpdates["contact_name"] = app.ContactName
+			}
+			if existing.ContactInfo == "" && app.ContactInfo != "" {
+				profileUpdates["contact_info"] = app.ContactInfo
+			}
+			if existing.PayoutAccount == "" && app.PayoutAccount != "" {
+				profileUpdates["payout_method"] = app.PayoutMethod
+				profileUpdates["payout_account"] = app.PayoutAccount
+				profileUpdates["payout_holder"] = app.PayoutHolder
+			}
+			if existing.PayoutQrcode == "" && app.PayoutQrcode != "" {
+				profileUpdates["payout_qrcode"] = app.PayoutQrcode
+			}
 			if err := tx.Model(&model.MerchantProfile{}).Where("id = ?", existing.Id).
-				Update("profit_ratio", profitRatio).Error; err != nil {
+				Updates(profileUpdates).Error; err != nil {
 				return fmt.Errorf("更新商家分成比例失败: %w", err)
 			}
 		} else {
 			profile := &model.MerchantProfile{
-				UserId:      app.UserId,
-				SiteName:    app.SiteName,
-				SiteUrl:     app.SiteUrl,
-				ProfitRatio: profitRatio,
-				Status:      model.MerchantStatusActive,
-				CreatedAt:   now,
-				UpdatedAt:   now,
+				UserId:          app.UserId,
+				MerchantCode:    fmt.Sprintf("m%d", app.UserId),
+				ShopName:        effectiveShopName,
+				SiteName:        effectiveShopName,
+				PlatformUrl:     app.PlatformUrl,
+				OperationTenure: app.OperationTenure,
+				SiteUrl:         app.SiteUrl,
+				ContactName:     app.ContactName,
+				ContactInfo:     app.ContactInfo,
+				Description:     app.Description,
+				PayoutMethod:    app.PayoutMethod,
+				PayoutAccount:   app.PayoutAccount,
+				PayoutHolder:    app.PayoutHolder,
+				PayoutQrcode:    app.PayoutQrcode,
+				ProfitRatio:     profitRatio,
+				Status:          model.MerchantStatusActive,
+				CreatedAt:       now,
+				UpdatedAt:       now,
 			}
 			if err := tx.Create(profile).Error; err != nil {
 				return fmt.Errorf("创建商家资料失败: %w", err)
@@ -2193,7 +2835,7 @@ func ReviewMerchantApplication(c *gin.Context) {
 	}
 	if approve {
 		if targetGroup != "" && slices.Contains(poolsToUse, targetGroup) {
-			if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, preview.SiteName); err != nil {
+			if err := syncMerchantGroupToNativeSettings(targetGroup, targetDesc, rateMultiplier, joinAuto, effectiveShopName); err != nil {
 				common.ApiError(c, fmt.Errorf("同步商家分组配置失败: %w", err))
 				return
 			}
@@ -2247,7 +2889,12 @@ func ProbeMerchantApplication(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "该申请的密钥已清除，无法探测"})
 		return
 	}
-	probe := service.ProbeUpstream(c.Request.Context(), app.SiteUrl, app.SiteKey,
+	plainKey, decErr := common.DecryptMerchantSecret(app.SiteKey)
+	if decErr != nil {
+		common.ApiError(c, fmt.Errorf("解密上游密钥失败: %w", decErr))
+		return
+	}
+	probe := service.ProbeUpstream(c.Request.Context(), app.SiteUrl, plainKey,
 		service.ParseUpstreamKind(app.UpstreamKind))
 	common.ApiSuccess(c, probe)
 }
@@ -2392,7 +3039,7 @@ func GetMerchantOverview(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"merchants": merchants, "pools": pools})
 }
 
-// UpdateMerchant 管理员调整商家分成比例或停用/启用。
+// UpdateMerchant 管理员调整商家分成比例、账期规则、联系档案或停用/启用。
 func UpdateMerchant(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
@@ -2400,8 +3047,13 @@ func UpdateMerchant(c *gin.Context) {
 		return
 	}
 	var req struct {
-		ProfitRatio *float64 `json:"profit_ratio"`
-		Status      *int     `json:"status"`
+		ProfitRatio    *float64 `json:"profit_ratio"`
+		Status         *int     `json:"status"`
+		SettleHoldDays *int     `json:"settle_hold_days"`
+		MinWithdraw    *float64 `json:"min_withdraw"`
+		AdminNote      *string  `json:"admin_note"`
+		ContactName    *string  `json:"contact_name"`
+		ContactInfo    *string  `json:"contact_info"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "参数错误"})
@@ -2422,6 +3074,29 @@ func UpdateMerchant(c *gin.Context) {
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
+	}
+	if req.SettleHoldDays != nil {
+		if *req.SettleHoldDays < 0 || *req.SettleHoldDays > 90 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "结算账期需在 0~90 天之间"})
+			return
+		}
+		updates["settle_hold_days"] = *req.SettleHoldDays
+	}
+	if req.MinWithdraw != nil {
+		if *req.MinWithdraw < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "最低提现门槛不能为负数"})
+			return
+		}
+		updates["min_withdraw"] = *req.MinWithdraw
+	}
+	if req.AdminNote != nil {
+		updates["admin_note"] = strings.TrimSpace(*req.AdminNote)
+	}
+	if req.ContactName != nil {
+		updates["contact_name"] = strings.TrimSpace(*req.ContactName)
+	}
+	if req.ContactInfo != nil {
+		updates["contact_info"] = strings.TrimSpace(*req.ContactInfo)
 	}
 	// 停用商家必须联动停用其名下渠道：分润按 profile 状态即时停止，
 	// 渠道若继续启用会继续承接付费流量而收入全部归平台。
@@ -2459,7 +3134,7 @@ func UpdateMerchant(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
-// AdminGetMerchantWithdrawals 管理员查看提现申请。
+// AdminGetMerchantWithdrawals 管理员/财务查看提现申请（附带商户名称、编号及账号信息）。
 func AdminGetMerchantWithdrawals(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	query := model.DB.Model(&model.MerchantWithdrawal{})
@@ -2477,8 +3152,57 @@ func AdminGetMerchantWithdrawals(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	type enrichedWithdrawal struct {
+		model.MerchantWithdrawal
+		ShopName         string `json:"shop_name"`
+		MerchantCode     string `json:"merchant_code"`
+		MerchantUsername string `json:"merchant_username"`
+	}
+	userIdSet := make(map[int]struct{}, len(withdrawals))
+	userIds := make([]int, 0, len(withdrawals))
+	for _, w := range withdrawals {
+		if w.MerchantUserId > 0 {
+			if _, ok := userIdSet[w.MerchantUserId]; !ok {
+				userIdSet[w.MerchantUserId] = struct{}{}
+				userIds = append(userIds, w.MerchantUserId)
+			}
+		}
+	}
+	profileMap := make(map[int]model.MerchantProfile, len(userIds))
+	userMap := make(map[int]string, len(userIds))
+	if len(userIds) > 0 {
+		var profiles []model.MerchantProfile
+		_ = model.DB.Where("user_id IN ?", userIds).Find(&profiles).Error
+		for _, p := range profiles {
+			profileMap[p.UserId] = p
+		}
+		var users []model.User
+		_ = model.DB.Select("id, username, display_name").Where("id IN ?", userIds).Find(&users).Error
+		for _, u := range users {
+			name := strings.TrimSpace(u.DisplayName)
+			if name == "" {
+				name = u.Username
+			}
+			userMap[u.Id] = name
+		}
+	}
+	items := make([]enrichedWithdrawal, 0, len(withdrawals))
+	for _, w := range withdrawals {
+		item := enrichedWithdrawal{
+			MerchantWithdrawal: w,
+			MerchantUsername:   userMap[w.MerchantUserId],
+		}
+		if p, ok := profileMap[w.MerchantUserId]; ok {
+			item.MerchantCode = p.MerchantCode
+			item.ShopName = strings.TrimSpace(p.ShopName)
+			if item.ShopName == "" {
+				item.ShopName = strings.TrimSpace(p.SiteName)
+			}
+		}
+		items = append(items, item)
+	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(withdrawals)
+	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -2524,8 +3248,31 @@ func ReviewMerchantWithdrawal(c *gin.Context) {
 		case "reject":
 			locked.Status = model.WithdrawalRejected
 			// 退回冻结金额
+			walletBefore, _ := model.EnsureMerchantWallet(tx, locked.MerchantUserId)
+			beforeBal := 0.0
+			if walletBefore != nil {
+				beforeBal = walletBefore.Balance
+			}
 			if err := model.RefundWithdrawal(tx, locked.MerchantUserId, locked.Amount); err != nil {
 				return err
+			}
+			if tx.Migrator().HasTable(&model.FinanceLedger{}) {
+				if err := model.RecordFinanceLedger(tx, &model.FinanceLedger{
+					LedgerNo:      fmt.Sprintf("withdraw_refund:%d", locked.Id),
+					Domain:        model.FinanceDomainMerchantWallet,
+					UserId:        locked.MerchantUserId,
+					BizType:       model.FinanceBizWithdrawRefund,
+					Direction:     model.FinanceDirUnfreeze,
+					AmountUSD:     locked.Amount,
+					BeforeBalance: beforeBal,
+					AfterBalance:  beforeBal + locked.Amount,
+					RefType:       "merchant_withdrawal",
+					RefId:         locked.TradeNo,
+					OperatorId:    adminId,
+					Remark:        req.ReviewNote,
+				}); err != nil {
+					return err
+				}
 			}
 		case "paid":
 			locked.Status = model.WithdrawalPaid
@@ -2533,6 +3280,22 @@ func ReviewMerchantWithdrawal(c *gin.Context) {
 			locked.PaidProof = req.PaidProof
 			if err := model.ConfirmWithdrawalPaid(tx, locked.MerchantUserId, locked.Amount); err != nil {
 				return err
+			}
+			if tx.Migrator().HasTable(&model.FinanceLedger{}) {
+				if err := model.RecordFinanceLedger(tx, &model.FinanceLedger{
+					LedgerNo:   fmt.Sprintf("withdraw_paid:%d", locked.Id),
+					Domain:     model.FinanceDomainMerchantWallet,
+					UserId:     locked.MerchantUserId,
+					BizType:    model.FinanceBizWithdrawPaid,
+					Direction:  model.FinanceDirOut,
+					AmountUSD:  locked.Amount,
+					RefType:    "merchant_withdrawal",
+					RefId:      locked.TradeNo,
+					OperatorId: adminId,
+					Remark:     req.PaidProof,
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		locked.ReviewNote = req.ReviewNote

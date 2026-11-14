@@ -34,18 +34,25 @@ func TestInitSeedsBuiltInRolesAndPoliciesOnce(t *testing.T) {
 	require.NoError(t, Init(db))
 
 	// root is a superuser role and is granted everything implicitly, so only the
-	// admin baseline is written as explicit policy rows.
+	// finance and admin baselines are written as explicit policy rows.
 	var count int64
 	require.NoError(t, db.Model(&model.CasbinRule{}).Count(&count).Error)
-	assert.Equal(t, int64(len(PermissionsForRole(BuiltInRoleAdmin))), count)
+	expectedPolicies := len(PermissionsForRole(BuiltInRoleFinance)) + len(PermissionsForRole(BuiltInRoleAdmin))
+	assert.Equal(t, int64(expectedPolicies), count)
 
 	var roles []model.AuthzRole
 	require.NoError(t, db.Order("sort asc").Find(&roles).Error)
-	require.Len(t, roles, 2)
+	require.Len(t, roles, 3)
 	assert.Equal(t, BuiltInRoleRoot, roles[0].Key)
-	assert.Equal(t, BuiltInRoleAdmin, roles[1].Key)
+	assert.Equal(t, BuiltInRoleFinance, roles[1].Key)
+	assert.Equal(t, BuiltInRoleAdmin, roles[2].Key)
 
 	assert.True(t, Can(1, common.RoleRootUser, ChannelSensitiveWrite))
+	assert.True(t, Can(4, common.RoleFinanceUser, FinanceRead))
+	assert.True(t, Can(4, common.RoleFinanceUser, FinanceSettle))
+	assert.True(t, Can(4, common.RoleFinanceUser, FinancePayout))
+	assert.False(t, Can(4, common.RoleFinanceUser, ChannelRead))
+	assert.False(t, Can(4, common.RoleFinanceUser, UserWrite))
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelRead))
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelOperate))
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelWrite))
@@ -154,6 +161,30 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionSensitiveWrite: true,
 			ActionSecretView:     false,
 		},
+		ResourceFinance: {
+			ActionRead:   true,
+			ActionSettle: false,
+			ActionPayout: false,
+		},
+		ResourceMerchant: {
+			ActionRead:   true,
+			ActionWrite:  true,
+			ActionReview: true,
+		},
+		ResourceUser: {
+			ActionRead:           true,
+			ActionWrite:          true,
+			ActionSensitiveWrite: true,
+			ActionSecretView:     true,
+		},
+		ResourceBilling: {
+			ActionRead:  true,
+			ActionWrite: true,
+		},
+		ResourceRedemption: {
+			ActionRead:  true,
+			ActionWrite: true,
+		},
 		ResourceTaskPlugin: {
 			ActionBind: false,
 		},
@@ -185,6 +216,30 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionWrite:          true,
 			ActionSensitiveWrite: false,
 			ActionSecretView:     false,
+		},
+		ResourceFinance: {
+			ActionRead:   true,
+			ActionSettle: false,
+			ActionPayout: false,
+		},
+		ResourceMerchant: {
+			ActionRead:   true,
+			ActionWrite:  true,
+			ActionReview: true,
+		},
+		ResourceUser: {
+			ActionRead:           true,
+			ActionWrite:          true,
+			ActionSensitiveWrite: true,
+			ActionSecretView:     true,
+		},
+		ResourceBilling: {
+			ActionRead:  true,
+			ActionWrite: true,
+		},
+		ResourceRedemption: {
+			ActionRead:  true,
+			ActionWrite: true,
 		},
 		ResourceTaskPlugin: {
 			ActionBind: false,

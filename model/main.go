@@ -385,6 +385,7 @@ func migrateDB() error {
 		&MerchantWallet{},
 		&MerchantEarning{},
 		&MerchantWithdrawal{},
+		&FinanceLedger{},
 	)
 	if err != nil {
 		return err

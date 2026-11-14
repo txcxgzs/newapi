@@ -117,6 +117,7 @@ export interface ChannelSettings {
   request_plugins?: string[]
   force_format?: boolean
   thinking_to_content?: boolean
+  upstream_privacy_sanitize?: boolean
   proxy?: string
   pass_through_body_enabled?: boolean
   responses_websocket_enabled?: boolean

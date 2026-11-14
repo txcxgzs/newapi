@@ -11,10 +11,11 @@ import (
 )
 
 type permissionRoute struct {
-	method     string
-	path       string
-	permission authz.Permission
-	handler    gin.HandlerFunc
+	method      string
+	path        string
+	permission  authz.Permission
+	auditReason *authz.Permission
+	handler     gin.HandlerFunc
 }
 
 // handlePermissionRoute registers a Casbin-guarded route and declares the same
@@ -50,7 +51,11 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	)
 
 	for _, route := range channelPermissionRoutes {
-		handlePermissionRoute(channelRoute, route.method, route.path, route.permission, route.handler)
+		if route.auditReason != nil {
+			handlePermissionRoute(channelRoute, route.method, route.path, route.permission, middleware.RequireAuditReason(*route.auditReason, middleware.DefaultAuditReasonMinLength), route.handler)
+		} else {
+			handlePermissionRoute(channelRoute, route.method, route.path, route.permission, route.handler)
+		}
 	}
 }
 
@@ -63,21 +68,21 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/default_base_urls", permission: authz.ChannelRead, handler: controller.GetChannelDefaultBaseURLs},
 	{method: http.MethodGet, path: "/models_enabled", permission: authz.ChannelRead, handler: controller.EnabledListModels},
 	{method: http.MethodGet, path: "/ops", permission: authz.ChannelRead, handler: controller.GetChannelOps},
-	{method: http.MethodGet, path: "/:id", permission: authz.ChannelRead, handler: controller.GetChannel},
+	{method: http.MethodGet, path: "/:id", permission: authz.ChannelRead, auditReason: &authz.ChannelSecretView, handler: controller.GetChannel},
 	{method: http.MethodGet, path: "/test", permission: authz.ChannelOperate, handler: controller.TestAllChannels},
 	{method: http.MethodGet, path: "/test/:id", permission: authz.ChannelOperate, handler: controller.TestChannel},
 	{method: http.MethodGet, path: "/update_balance", permission: authz.ChannelOperate, handler: controller.UpdateAllChannelsBalance},
 	{method: http.MethodGet, path: "/update_balance/:id", permission: authz.ChannelOperate, handler: controller.UpdateChannelBalance},
 	{method: http.MethodGet, path: "/update_balance/task/:task_id", permission: authz.ChannelOperate, handler: controller.GetChannelBalanceTask},
-	{method: http.MethodPost, path: "/", permission: authz.ChannelSensitiveWrite, handler: controller.AddChannel},
-	{method: http.MethodPut, path: "/", permission: authz.ChannelWrite, handler: controller.UpdateChannel},
+	{method: http.MethodPost, path: "/", permission: authz.ChannelSensitiveWrite, auditReason: &authz.ChannelSensitiveWrite, handler: controller.AddChannel},
+	{method: http.MethodPut, path: "/", permission: authz.ChannelWrite, auditReason: &authz.ChannelWrite, handler: controller.UpdateChannel},
 	{method: http.MethodPost, path: "/status/batch", permission: authz.ChannelOperate, handler: controller.BatchUpdateChannelStatus},
 	{method: http.MethodPost, path: "/:id/status", permission: authz.ChannelOperate, handler: controller.UpdateChannelStatus},
 	{method: http.MethodDelete, path: "/disabled", permission: authz.ChannelSensitiveWrite, handler: controller.DeleteDisabledChannel},
 	{method: http.MethodPost, path: "/tag/disabled", permission: authz.ChannelOperate, handler: controller.DisableTagChannels},
 	{method: http.MethodPost, path: "/tag/enabled", permission: authz.ChannelOperate, handler: controller.EnableTagChannels},
 	{method: http.MethodPut, path: "/tag", permission: authz.ChannelWrite, handler: controller.EditTagChannels},
-	{method: http.MethodDelete, path: "/:id", permission: authz.ChannelSensitiveWrite, handler: controller.DeleteChannel},
+	{method: http.MethodDelete, path: "/:id", permission: authz.ChannelSensitiveWrite, auditReason: &authz.ChannelSensitiveWrite, handler: controller.DeleteChannel},
 	{method: http.MethodPost, path: "/batch", permission: authz.ChannelSensitiveWrite, handler: controller.DeleteChannelBatch},
 	{method: http.MethodPost, path: "/fix", permission: authz.ChannelOperate, handler: controller.FixChannelsAbilities},
 	{method: http.MethodGet, path: "/fetch_models/:id", permission: authz.ChannelOperate, handler: controller.FetchUpstreamModels},

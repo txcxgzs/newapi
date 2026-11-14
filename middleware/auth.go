@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -82,11 +83,11 @@ func authHelper(c *gin.Context, minRole int) {
 		setAccessTokenContext(c, lookup)
 	}
 
-	// 管理/root 写操作审计兜底：内聚在鉴权链路里，保证任何经过 AdminAuth/RootAuth
+	// 管理/财务/root 写操作审计兜底：内聚在鉴权链路里，保证任何经过 FinanceAuth/AdminAuth/RootAuth
 	// 的写接口都会自动留痕（无需在路由上单独挂审计中间件，避免漏挂）。
 	// handler 内手动埋点者会设置 ContextKeyAuditLogged，finishAdminAudit 据此跳过。
 	var auditWriter *auditResponseWriter
-	if minRole >= common.RoleAdminUser {
+	if minRole >= common.RoleFinanceUser {
 		auditWriter = beginAdminAudit(c)
 	}
 
@@ -140,6 +141,14 @@ func UserAuth() func(c *gin.Context) {
 func MerchantAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		authHelper(c, common.RoleMerchant)
+	}
+}
+
+// FinanceAuth 财务中心门禁：财务专员（5）及以上可访问（管理员/Root 可进），
+// 细粒度操作权限由 RequirePermission 进一步收敛。
+func FinanceAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		authHelper(c, common.RoleFinanceUser)
 	}
 }
 
@@ -424,6 +433,87 @@ func RequirePermission(permission authz.Permission) func(c *gin.Context) {
 			return
 		}
 		abortWithWebMessage(c, http.StatusForbidden, "", common.NewMessage("Unauthorized, insufficient privileges"))
+	}
+}
+
+const DefaultAuditReasonMinLength = 15
+
+// CheckAuditReason verifies whether the current actor must supply X-Audit-Reason
+// for the given permission under their audit_reason_rules. Root users are exempt.
+// On success it stores the trimmed reason in request context.
+func CheckAuditReason(c *gin.Context, permission authz.Permission, minRuneLen int) (string, bool) {
+	role := c.GetInt("role")
+	userID := c.GetInt("id")
+	if role >= common.RoleRootUser || role < common.RoleFinanceUser || userID <= 0 {
+		return "", true
+	}
+	user, err := model.GetUserById(userID, false)
+	if err != nil {
+		return "", true
+	}
+	rules := authz.ResolveAuditReasonRules(role, common.RoleRootUser, user.GetAuditReasonRules())
+	if !rules[permission.Resource][permission.Action] {
+		return "", true
+	}
+	if minRuneLen <= 0 {
+		minRuneLen = DefaultAuditReasonMinLength
+	}
+	reason := strings.TrimSpace(c.GetHeader("X-Audit-Reason"))
+	if utf8.RuneCountInString(reason) < minRuneLen {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success":    false,
+			"code":       "AUDIT_REASON_REQUIRED",
+			"message":    fmt.Sprintf("该敏感操作需填写不少于 %d 个字的操作用途说明", minRuneLen),
+			"resource":   permission.Resource,
+			"action":     permission.Action,
+			"min_length": minRuneLen,
+		})
+		c.Abort()
+		return "", false
+	}
+	common.SetContextKey(c, constant.ContextKeyAuditReason, reason)
+	return reason, true
+}
+
+// RequireAuditReason enforces X-Audit-Reason on routes matching the permission
+// according to the operator's audit_reason_rules. For GET detail routes it also
+// records an audit log entry with the supplied reason.
+func RequireAuditReason(permission authz.Permission, minRuneLen int) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		reason, ok := CheckAuditReason(c, permission, minRuneLen)
+		if !ok {
+			return
+		}
+		c.Next()
+		if reason != "" && c.Request.Method == http.MethodGet && c.Writer.Status() < 400 {
+			operatorId := c.GetInt("id")
+			operatorRole := c.GetInt("role")
+			action := permission.Resource + "." + permission.Action
+			route := c.FullPath()
+			routeParams := map[string]string{}
+			for _, p := range c.Params {
+				routeParams[p.Key] = p.Value
+			}
+			adminInfo := &model.AuditAdminInfo{
+				AdminID:       operatorId,
+				AdminUsername: c.GetString("username"),
+				AdminRole:     operatorRole,
+				AuthMethod:    auditAuthMethod(c),
+			}
+			auditInfo := &model.AuditRequestInfo{
+				Method:  c.Request.Method,
+				Route:   route,
+				Path:    route,
+				Status:  c.Writer.Status(),
+				Success: true,
+				Params:  routeParams,
+			}
+			opParams := map[string]any{"route": route}
+			if id := c.Param("id"); id != "" {
+				opParams["id"] = id
+			}
+			model.RecordOperationAuditLog(operatorId, operatorRole, fmt.Sprintf("Viewed %s (%s)", route, reason), c.ClientIP(), action, opParams, adminInfo, auditInfo, c)
+		}
 	}
 }
 

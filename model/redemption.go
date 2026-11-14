@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -182,6 +183,18 @@ func Redeem(key string, userId int) (quota int, err error) {
 	}
 	syncCreditUserQuotaCache(userId, redemption.Quota, common.LogText("redemption"))
 	RecordLog(userId, LogTypeTopup, common.NewMessage("Topped up {{quota}} with a redemption code, code ID {{id}}", map[string]any{"quota": logger.FormatQuota(redemption.Quota), "id": redemption.Id}))
+	RecordFinanceLedgerBestEffort(&FinanceLedger{
+		LedgerNo:   fmt.Sprintf("redemption:%d", redemption.Id),
+		Domain:     FinanceDomainUserQuota,
+		UserId:     userId,
+		BizType:    FinanceBizRedemptionCredit,
+		Direction:  FinanceDirIn,
+		AmountUSD:  float64(redemption.Quota) / common.QuotaPerUnit,
+		QuotaDelta: int64(redemption.Quota),
+		RefType:    "redemption",
+		RefId:      strconv.Itoa(redemption.Id),
+		Remark:     redemption.Name,
+	})
 	return redemption.Quota, nil
 }
 

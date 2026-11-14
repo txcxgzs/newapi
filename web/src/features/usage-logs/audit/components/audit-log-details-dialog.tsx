@@ -107,6 +107,16 @@ export function AuditLogDetailsDialog(props: { entry: AuditLog }) {
           )}
         </div>
       </div>
+      {detail.auditReason && (
+        <div className='rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm'>
+          <div className='mb-1 text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300'>
+            {t('Audit reason')}
+          </div>
+          <p className='text-foreground text-sm leading-relaxed break-words'>
+            {detail.auditReason}
+          </p>
+        </div>
+      )}
       {detail.operation && (
         <DetailSection
           label={

@@ -18,12 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { VChart } from '@visactor/react-vchart'
 import { registerCandlestickChart } from '@visactor/vchart-extension'
+import { CandlestickChart } from 'lucide-react'
 import { Component, useMemo, type ComponentProps, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 import { useChartTheme } from '@/lib/use-chart-theme'
+import { cn } from '@/lib/utils'
 import { VCHART_OPTION } from '@/lib/vchart'
 
 import { formatMarketPrice } from '../lib/format'
@@ -357,12 +359,13 @@ export function MarketKlineChart({
   if (!candles.length) {
     return (
       <div
-        className={
-          className ??
-          'text-muted-foreground flex h-80 items-center justify-center'
-        }
+        className={cn(
+          'text-muted-foreground flex h-80 flex-col items-center justify-center gap-2 text-center text-sm',
+          className
+        )}
       >
-        {t('No transaction data yet')}
+        <CandlestickChart className='text-muted-foreground/50 size-8' />
+        <span>{t('No transaction data yet')}</span>
       </div>
     )
   }

@@ -98,6 +98,9 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	if events := RequestPolicy(ctx).Events(); len(events) > 0 {
 		other.SetAdmin("request_policy", events)
 	}
+	if (relayInfo != nil && relayInfo.ChannelMeta != nil && relayInfo.ChannelSetting.UpstreamPrivacySanitize) || common.ShouldSanitizeUpstreamPrivacy(ctx) {
+		other.SetAdmin("upstream_privacy_sanitize", true)
+	}
 }
 
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,

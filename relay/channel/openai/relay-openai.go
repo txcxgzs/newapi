@@ -26,13 +26,20 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		return nil
 	}
 
-	if !forceFormat && !thinkToContent {
+	sanitizeUpstream := shouldSanitizeUpstreamPrivacy(info)
+	if !forceFormat && !thinkToContent && !sanitizeUpstream {
 		return helper.StringData(c, data)
 	}
 
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &lastStreamResponse); err != nil {
 		return err
+	}
+	if sanitizeUpstream {
+		if info.OriginModelName != "" {
+			lastStreamResponse.Model = info.OriginModelName
+		}
+		lastStreamResponse.SystemFingerprint = nil
 	}
 
 	if !thinkToContent {
@@ -337,7 +344,26 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
 		}
-		if forceFormat {
+		if shouldSanitizeUpstreamPrivacy(info) {
+			if info.OriginModelName != "" {
+				simpleResponse.Model = info.OriginModelName
+			}
+			if !forceFormat && ojson.GetBytes(responseBody, "choices.0.text").Exists() {
+				if info.OriginModelName != "" {
+					if patched, patchErr := ojson.SetBytes(responseBody, "model", info.OriginModelName); patchErr == nil {
+						responseBody = patched
+					}
+				}
+				if patched, patchErr := ojson.DeleteBytes(responseBody, "system_fingerprint"); patchErr == nil {
+					responseBody = patched
+				}
+				break
+			}
+			responseBody, err = common.Marshal(simpleResponse)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		} else if forceFormat {
 			responseBody, err = common.Marshal(simpleResponse)
 			if err != nil {
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)

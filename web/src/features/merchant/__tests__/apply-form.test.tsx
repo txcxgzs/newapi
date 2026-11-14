@@ -42,8 +42,11 @@ const platformModelsMock = vi.mocked(getPlatformModels)
 const submittedApplication: MerchantApplication = {
   id: 1,
   user_id: 2,
-  site_name: 'MyRelay',
-  site_url: 'https://api.example.com',
+  shop_name: 'AcmeRelay',
+  platform_url: 'https://acme-ai.example.com',
+  operation_tenure: '1-2y',
+  site_name: 'AcmeRelay',
+  site_url: '',
   site_key: '',
   models: '[]',
   upstream_kind: '',
@@ -81,13 +84,74 @@ function renderForm(onSubmitted: () => void) {
   )
 }
 
-async function fillBaseFields(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText('Site Name'), 'MyRelay')
-  await user.type(screen.getByLabelText('Site URL'), 'https://api.example.com')
+async function fillQualificationFields(
+  user: ReturnType<typeof userEvent.setup>
+) {
+  await user.type(screen.getByLabelText('Shop Name'), 'MyRelay')
+  await user.type(
+    screen.getByLabelText('Platform Website URL'),
+    'https://portal.myrelay.example.com'
+  )
+  await user.click(screen.getByLabelText('Operation Tenure'))
+  await user.click(await screen.findByText('1 - 2 years'))
+  await user.type(screen.getByLabelText('Contact Person'), 'Alice')
+  await user.type(screen.getByLabelText('Contact Info'), 'tg:@alice')
+  await user.click(
+    screen.getByRole('switch', {
+      name: 'Merchant Settlement & Commission Agreement',
+    })
+  )
+}
+
+async function fillOptionalChannelFields(
+  user: ReturnType<typeof userEvent.setup>
+) {
+  await user.click(
+    screen.getByRole('switch', {
+      name: 'Configure initial upstream channel now (optional)',
+    })
+  )
+  await user.type(
+    screen.getByLabelText('API Base URL'),
+    'https://api.example.com'
+  )
   await user.type(screen.getByLabelText('API Key'), 'sk-test')
 }
 
-it('maps upstream models to platform models and submits the mapping', async () => {
+it('submits pure qualification onboarding without requiring an initial upstream channel', async () => {
+  const user = userEvent.setup()
+  const onSubmitted = vi.fn()
+  renderForm(onSubmitted)
+
+  // Displays warnings about Shop Name lock and display-only Platform URL
+  expect(
+    screen.getByText(/Finance Center reconciliation statements/i)
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText(/never used for API relay or endpoint probing/i)
+  ).toBeInTheDocument()
+  expect(screen.queryByLabelText('API Base URL')).not.toBeInTheDocument()
+
+  await fillQualificationFields(user)
+  await user.click(screen.getByRole('button', { name: 'Submit Application' }))
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1))
+  expect(submitMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      shop_name: 'MyRelay',
+      platform_url: 'https://portal.myrelay.example.com',
+      operation_tenure: '1-2y',
+      site_name: 'MyRelay',
+      site_url: undefined,
+      site_key: undefined,
+      contact_name: 'Alice',
+      contact_info: 'tg:@alice',
+      agreed_terms: true,
+    })
+  )
+})
+
+it('maps upstream models when optional initial channel setup is enabled', async () => {
   const user = userEvent.setup()
   const onSubmitted = vi.fn()
   probeMock.mockResolvedValue({
@@ -104,11 +168,11 @@ it('maps upstream models to platform models and submits the mapping', async () =
   })
   renderForm(onSubmitted)
 
-  await fillBaseFields(user)
+  await fillQualificationFields(user)
+  await fillOptionalChannelFields(user)
   await user.click(
     screen.getByRole('button', { name: 'Probe upstream & pull models' })
   )
-  // 拉到模型清单：出现对接编辑器，且同名模型自动对接；手填清单默认收起
   expect(await screen.findByText('Model mapping')).toBeInTheDocument()
   expect(screen.queryByLabelText('Listed Models')).not.toBeInTheDocument()
   expect(screen.getByText('2 of 3 mapped')).toBeInTheDocument()
@@ -121,15 +185,23 @@ it('maps upstream models to platform models and submits the mapping', async () =
     site_key: 'sk-test',
     upstream_kind: '',
   })
-  // 同名模型直接上架；上游独有的名字未对接，不上架
-  expect(submitMock).toHaveBeenCalledWith({
-    site_name: 'MyRelay',
-    site_url: 'https://api.example.com',
-    site_key: 'sk-test',
-    upstream_kind: '',
-    rate_multiplier: undefined,
-    models: [{ model: 'claude-sonnet-4' }, { model: 'gpt-4o' }],
-  })
+  expect(submitMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      shop_name: 'MyRelay',
+      platform_url: 'https://portal.myrelay.example.com',
+      operation_tenure: '1-2y',
+      site_name: 'MyRelay',
+      site_url: 'https://api.example.com',
+      site_key: 'sk-test',
+      contact_name: 'Alice',
+      contact_info: 'tg:@alice',
+      agreed_terms: true,
+      upstream_kind: '',
+      join_auto_group: true,
+      rate_multiplier: 1,
+      models: [{ model: 'claude-sonnet-4' }, { model: 'gpt-4o' }],
+    })
+  )
 })
 
 it('falls back to the manual model list when no models could be pulled', async () => {
@@ -141,35 +213,53 @@ it('falls back to the manual model list when no models could be pulled', async (
     models_endpoint_ok: false,
     model_count: 0,
     price_fetch_ok: false,
-    price_fetch_message:
-      '该上游类型不提供价格接口，报价将按平台标准价挂牌',
+    price_fetch_message: '该上游类型不提供价格接口，报价将按平台标准价挂牌',
   })
   renderForm(onSubmitted)
 
-  await fillBaseFields(user)
+  await fillQualificationFields(user)
+  await fillOptionalChannelFields(user)
   await user.click(
     screen.getByRole('button', { name: 'Probe upstream & pull models' })
   )
-  // 没拉到模型清单：自动展开手动兜底，并出现折扣倍率兜底输入
   const manual = await screen.findByLabelText('Listed Models')
-  const fallback = screen.getByLabelText('Optional discount rate (fallback)')
+  const fallback = screen.getByLabelText('分组倍率（GroupRatio）')
   await user.clear(fallback)
   await user.type(fallback, '0.5')
   await user.type(manual, 'gpt-4, default-pool\ngpt-4o')
   await user.click(screen.getByRole('button', { name: 'Submit Application' }))
 
   await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1))
-  expect(submitMock).toHaveBeenCalledWith({
-    site_name: 'MyRelay',
-    site_url: 'https://api.example.com',
-    site_key: 'sk-test',
-    upstream_kind: '',
-    rate_multiplier: 0.5,
-    models: [
-      { model: 'gpt-4', pool: 'default-pool' },
-      { model: 'gpt-4o' },
-    ],
-  })
+  expect(submitMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      shop_name: 'MyRelay',
+      site_name: 'MyRelay',
+      site_url: 'https://api.example.com',
+      site_key: 'sk-test',
+      rate_multiplier: 0.5,
+      models: [
+        { model: 'gpt-4', pool: 'default-pool' },
+        { model: 'gpt-4o' },
+      ],
+    })
+  )
+})
+
+it('blocks onboarding submission when settlement terms are not agreed', async () => {
+  const user = userEvent.setup()
+  const onSubmitted = vi.fn()
+  renderForm(onSubmitted)
+
+  await user.type(screen.getByLabelText('Shop Name'), 'MyRelay')
+  await user.type(
+    screen.getByLabelText('Platform Website URL'),
+    'https://portal.myrelay.example.com'
+  )
+  await user.type(screen.getByLabelText('Contact Info'), 'tg:@alice')
+  await user.click(screen.getByRole('button', { name: 'Submit Application' }))
+
+  expect(submitMock).not.toHaveBeenCalled()
+  expect(onSubmitted).not.toHaveBeenCalled()
 })
 
 it('blocks submission when a filled manual model row has no model name', async () => {
@@ -184,12 +274,12 @@ it('blocks submission when a filled manual model row has no model name', async (
   })
   renderForm(onSubmitted)
 
-  await fillBaseFields(user)
+  await fillQualificationFields(user)
+  await fillOptionalChannelFields(user)
   await user.click(
     screen.getByRole('button', { name: 'Probe upstream & pull models' })
   )
   const manual = await screen.findByLabelText('Listed Models')
-  // 缺少模型名（仅号池）的行应被判定为非法并阻止提交
   await user.type(manual, ', pro')
   await user.click(screen.getByRole('button', { name: 'Submit Application' }))
 

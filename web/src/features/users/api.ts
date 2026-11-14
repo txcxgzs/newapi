@@ -20,6 +20,7 @@ import type { AxiosRequestConfig } from 'axios'
 
 import type { PermissionCatalog } from '@/lib/admin-permissions'
 import { api } from '@/lib/api'
+import { withAuditReasonHeaders } from '@/lib/audit-reason'
 import type { CustomOAuthBinding } from '@/lib/oauth'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -98,8 +99,14 @@ export async function searchUsers(
 /**
  * Get single user by ID
  */
-export async function getUser(id: number): Promise<ApiResponse<User>> {
-  const res = await api.get(`/api/user/${id}`)
+export async function getUser(
+  id: number,
+  auditReason?: string
+): Promise<ApiResponse<User>> {
+  const res = await api.get(
+    `/api/user/${id}`,
+    withAuditReasonHeaders(auditReason)
+  )
   return res.data
 }
 

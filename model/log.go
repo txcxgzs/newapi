@@ -112,10 +112,73 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 	}
 }
 
+func getChannelUpstreamPrivacyMap(channelIds []int) map[int]bool {
+	result := make(map[int]bool)
+	if len(channelIds) == 0 || DB == nil {
+		return result
+	}
+	uniqueIds := make([]int, 0, len(channelIds))
+	seen := make(map[int]struct{}, len(channelIds))
+	for _, id := range channelIds {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIds = append(uniqueIds, id)
+	}
+	if len(uniqueIds) == 0 {
+		return result
+	}
+	var channels []Channel
+	if err := DB.Model(&Channel{}).Unscoped().Select("id, setting").Where("id IN ?", uniqueIds).Find(&channels).Error; err != nil {
+		return result
+	}
+	for i := range channels {
+		result[channels[i].Id] = channels[i].GetSetting().UpstreamPrivacySanitize
+	}
+	return result
+}
+
+func formatUserLogItem(log *Log, sanitizeUpstream bool) {
+	if log == nil {
+		return
+	}
+	log.ChannelName = ""
+	log.Other = formatLogOtherJSONWithPrivacy(log.Other, logOtherVisibilityUser, sanitizeUpstream)
+	if sanitizeUpstream {
+		log.ChannelId = 0
+		log.UpstreamRequestId = ""
+		if log.Type == LogTypeError {
+			if log.RequestId != "" {
+				log.Content = "Upstream service error (request id: " + log.RequestId + ")"
+			} else {
+				log.Content = "Upstream service error"
+			}
+		}
+	}
+}
+
 func formatUserLogs(logs []*Log, startIdx int) {
+	channelIds := make([]int, 0, len(logs))
 	for i := range logs {
-		logs[i].ChannelName = ""
-		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser)
+		if logs[i] != nil && logs[i].ChannelId > 0 {
+			channelIds = append(channelIds, logs[i].ChannelId)
+		}
+	}
+	privacyMap := getChannelUpstreamPrivacyMap(channelIds)
+	for i := range logs {
+		sanitizeUpstream := false
+		if logs[i] != nil {
+			if enabled, found := privacyMap[logs[i].ChannelId]; found {
+				sanitizeUpstream = enabled
+			} else {
+				sanitizeUpstream = logOtherHasUpstreamPrivacySanitize(logs[i].Other)
+			}
+		}
+		formatUserLogItem(logs[i], sanitizeUpstream)
 	}
 	assignDisplayLogIds(logs, startIdx)
 }
@@ -659,11 +722,28 @@ func StreamUserLogs(ctx context.Context, userId int, filter LogFilter, fn func(*
 		return err
 	}
 	count := 0
+	channelPrivacyCache := make(map[int]*bool)
 	return streamLogs(tx, "logs.id desc", func(log *Log) error {
 		count++
 		log.Id = count
-		log.ChannelName = ""
-		log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser)
+		var sanitizeUpstream bool
+		if log.ChannelId > 0 {
+			cached, known := channelPrivacyCache[log.ChannelId]
+			if !known {
+				if enabled, found := getChannelUpstreamPrivacyMap([]int{log.ChannelId})[log.ChannelId]; found {
+					cached = &enabled
+				}
+				channelPrivacyCache[log.ChannelId] = cached
+			}
+			if cached != nil {
+				sanitizeUpstream = *cached
+			} else {
+				sanitizeUpstream = logOtherHasUpstreamPrivacySanitize(log.Other)
+			}
+		} else {
+			sanitizeUpstream = logOtherHasUpstreamPrivacySanitize(log.Other)
+		}
+		formatUserLogItem(log, sanitizeUpstream)
 		return fn(log)
 	})
 }

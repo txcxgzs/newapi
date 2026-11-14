@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ExternalLink, QrCode } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -63,6 +64,11 @@ import {
   upsertChannelQuote,
 } from './api'
 import { UpstreamProbeDialog } from './components/upstream-probe-dialog'
+import {
+  OPERATION_TENURE_OPTIONS,
+  isValidPayoutQrDataUrl,
+} from './lib/payout-qrcode'
+import { getPayoutMethodLabel } from './payout-methods'
 import type {
   ChannelQuote,
   MerchantApplication,
@@ -192,11 +198,22 @@ function OverviewTab() {
             <div key={m.user_id} className='rounded-xl border p-3'>
               <div className='flex flex-wrap items-center gap-2'>
                 <span className='text-sm font-medium'>
-                  {m.site_name || m.username}
+                  {m.shop_name || m.site_name || m.username}
                 </span>
                 <span className='text-muted-foreground text-xs'>
                   @{m.username}
                 </span>
+                {m.platform_url && (
+                  <a
+                    href={m.platform_url}
+                    target='_blank'
+                    rel='noreferrer'
+                    className='text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs hover:underline'
+                  >
+                    <ExternalLink className='size-3' />
+                    {m.platform_url}
+                  </a>
+                )}
                 <Badge
                   variant={m.status === 1 ? 'default' : 'destructive'}
                 >
@@ -261,6 +278,14 @@ function formatReviewResultSummary(
   result: MerchantReviewResult,
   t: (key: string, opts?: Record<string, string>) => string
 ): string {
+  if (result.app_type === 'profile_change') {
+    return t('Shop Name updated to {{name}}', { name: result.shop_name ?? '' })
+  }
+  if (result.qualification_only) {
+    return t('Merchant "{{name}}" approved (qualification onboarding complete)', {
+      name: result.shop_name ?? '',
+    })
+  }
   if (result.app_type === 'group_change') {
     const rateText =
       typeof result.rate_multiplier === 'number'
@@ -335,37 +360,62 @@ function ApplicationsTab() {
     if (!reviewing) return
     const approve = action === 'approve'
     const isGroupChange = reviewing.app_type === 'group_change'
+    const isProfileChange = reviewing.app_type === 'profile_change'
+    const isQualificationOnly =
+      !isGroupChange && !isProfileChange && !reviewing.site_url
     try {
       const result = await reviewMerchantApplication(reviewing.id, {
         action,
         review_note: note,
         pools:
-          approve && !isGroupChange
+          approve && !isGroupChange && !isProfileChange && !isQualificationOnly
             ? pools
                 .split(',')
                 .map((p) => p.trim())
                 .filter(Boolean)
             : undefined,
         group_name:
-          approve && groupName.trim() !== '' ? groupName.trim() : undefined,
-        group_desc: approve ? groupDesc.trim() : undefined,
-        join_auto_group: approve ? joinAutoGroup : undefined,
+          approve && !isProfileChange && !isQualificationOnly && groupName.trim() !== ''
+            ? groupName.trim()
+            : undefined,
+        group_desc:
+          approve && !isProfileChange && !isQualificationOnly
+            ? groupDesc.trim()
+            : undefined,
+        join_auto_group:
+          approve && !isProfileChange && !isQualificationOnly
+            ? joinAutoGroup
+            : undefined,
         profit_ratio:
-          approve && !isGroupChange ? Number(profitRatio) || 0.95 : undefined,
-        upstream_kind: !isGroupChange
-          ? toUpstreamKind(upstreamKind)
-          : undefined,
+          approve && !isGroupChange && !isProfileChange
+            ? Number(profitRatio) || 0.95
+            : undefined,
+        upstream_kind:
+          !isGroupChange && !isProfileChange && !isQualificationOnly
+            ? toUpstreamKind(upstreamKind)
+            : undefined,
         channel_type:
-          approve && !isGroupChange && channelType !== FOLLOW_PROBE
+          approve &&
+          !isGroupChange &&
+          !isProfileChange &&
+          !isQualificationOnly &&
+          channelType !== FOLLOW_PROBE
             ? Number(channelType)
             : undefined,
         price_sync:
-          approve && !isGroupChange && priceSync !== 'auto'
+          approve &&
+          !isGroupChange &&
+          !isProfileChange &&
+          !isQualificationOnly &&
+          priceSync !== 'auto'
             ? priceSync === 'on'
             : undefined,
         // 倍率留空表示不覆盖商家申请值，交由后端沿用
         rate_multiplier:
-          approve && rateMultiplier.trim() !== ''
+          approve &&
+          !isProfileChange &&
+          !isQualificationOnly &&
+          rateMultiplier.trim() !== ''
             ? Number(rateMultiplier)
             : undefined,
       })
@@ -413,15 +463,17 @@ function ApplicationsTab() {
           <AlertTitle>{t('Last review result')}</AlertTitle>
           <AlertDescription className='space-y-1'>
             <p>{formatReviewResultSummary(lastReview, t)}</p>
-            {lastReview.app_type !== 'group_change' && (
-              <p>
-                {lastReview.price_sync
-                  ? t('Automatic price sync is enabled for this channel.')
-                  : t(
-                      'Automatic price sync is disabled: this upstream exposes no price API, so keep the channel quotes updated manually.'
-                    )}
-              </p>
-            )}
+            {lastReview.app_type !== 'group_change' &&
+              lastReview.app_type !== 'profile_change' &&
+              !lastReview.qualification_only && (
+                <p>
+                  {lastReview.price_sync
+                    ? t('Automatic price sync is enabled for this channel.')
+                    : t(
+                        'Automatic price sync is disabled: this upstream exposes no price API, so keep the channel quotes updated manually.'
+                      )}
+                </p>
+              )}
             {(lastReview.probe?.warnings ?? []).length > 0 && (
               <ul className='list-disc space-y-1 pl-4'>
                 {(lastReview.probe?.warnings ?? []).map((warning) => (
@@ -443,82 +495,127 @@ function ApplicationsTab() {
           <span className='w-32 text-right'>{t('Actions')}</span>
         </div>
         <div className='divide-y'>
-          {items.map((a) => (
-            <div
-              key={a.id}
-              className='grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] items-center gap-2 px-3 py-2 text-sm'
-            >
-              <a
-                href={a.site_url}
-                target='_blank'
-                rel='noreferrer'
-                className='truncate hover:underline'
+          {items.map((a) => {
+            const isGroupChangeApp = a.app_type === 'group_change'
+            const isProfileChangeApp = a.app_type === 'profile_change'
+            const isQualificationApp =
+              !isGroupChangeApp && !isProfileChangeApp && !a.site_url
+            const tenureOpt = OPERATION_TENURE_OPTIONS.find(
+              (o) => o.value === a.operation_tenure
+            )
+            let appTypeLabel = t('新渠道/分组')
+            if (isProfileChangeApp) {
+              appTypeLabel = t('改名申请')
+            } else if (isGroupChangeApp) {
+              appTypeLabel = t('分组变更')
+            } else if (isQualificationApp) {
+              appTypeLabel = t('资质入驻')
+            }
+            return (
+              <div
+                key={a.id}
+                className='grid grid-cols-[1fr_1.1fr_1fr_1fr_auto_auto] items-center gap-2 px-3 py-2 text-sm'
               >
-                {a.site_name}
-              </a>
-              <div className='flex flex-wrap items-center gap-1 text-xs'>
-                <Badge variant='outline'>
-                  {a.app_type === 'group_change'
-                    ? t('分组变更')
-                    : t('新渠道/分组')}
-                </Badge>
-                {a.group_name && (
-                  <span className='font-mono font-medium'>{a.group_name}</span>
-                )}
-                <Badge variant='secondary'>
-                  {`×${(a.rate_multiplier || 1).toFixed(2)}`}
-                </Badge>
-                {a.join_auto_group && (
-                  <Badge variant='secondary'>Auto</Badge>
-                )}
-                {a.app_type !== 'group_change' && (
-                  <span className='text-muted-foreground truncate'>
-                    {t(upstreamKindLabelKey(a.upstream_kind))}
+                <div className='min-w-0'>
+                  <span className='block truncate font-medium'>
+                    {a.shop_name || a.site_name}
                   </span>
-                )}
-              </div>
-              <span>#{a.user_id}</span>
-              <span className='text-muted-foreground'>
-                {formatTimestampToDate(a.created_at)}
-              </span>
-              <span>
-                {a.status === 0 && (
-                  <Badge variant='secondary'>{t('Pending Review')}</Badge>
-                )}
-                {a.status === 1 && (
-                  <Badge variant='default'>{t('Approved')}</Badge>
-                )}
-                {a.status === 2 && (
-                  <Badge variant='destructive'>{t('Rejected')}</Badge>
-                )}
-              </span>
-              <span className='flex w-32 justify-end gap-1'>
-                {a.status === 0 && (
-                  <>
-                    {a.app_type !== 'group_change' && (
+                  {a.platform_url && (
+                    <a
+                      href={a.platform_url}
+                      target='_blank'
+                      rel='noreferrer'
+                      className='text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 truncate text-xs hover:underline'
+                    >
+                      <ExternalLink className='size-3 shrink-0' />
+                      <span className='truncate'>{a.platform_url}</span>
+                    </a>
+                  )}
+                  {!a.platform_url && a.site_url && (
+                    <a
+                      href={a.site_url}
+                      target='_blank'
+                      rel='noreferrer'
+                      className='text-muted-foreground block truncate text-xs hover:underline'
+                    >
+                      {a.site_url}
+                    </a>
+                  )}
+                </div>
+                <div className='flex flex-wrap items-center gap-1 text-xs'>
+                  <Badge variant='outline'>{appTypeLabel}</Badge>
+                  {isProfileChangeApp && a.requested_shop_name && (
+                    <span className='font-medium text-amber-600 dark:text-amber-400'>
+                      → {a.requested_shop_name}
+                    </span>
+                  )}
+                  {tenureOpt && (
+                    <Badge variant='secondary'>{t(tenureOpt.labelKey)}</Badge>
+                  )}
+                  {a.group_name && (
+                    <span className='font-mono font-medium'>{a.group_name}</span>
+                  )}
+                  {!isProfileChangeApp && !isQualificationApp && (
+                    <Badge variant='secondary'>
+                      {`×${(a.rate_multiplier || 1).toFixed(2)}`}
+                    </Badge>
+                  )}
+                  {a.join_auto_group && (
+                    <Badge variant='secondary'>Auto</Badge>
+                  )}
+                  {!isGroupChangeApp &&
+                    !isProfileChangeApp &&
+                    !isQualificationApp && (
+                      <span className='text-muted-foreground truncate'>
+                        {t(upstreamKindLabelKey(a.upstream_kind))}
+                      </span>
+                    )}
+                </div>
+                <span>#{a.user_id}</span>
+                <span className='text-muted-foreground'>
+                  {formatTimestampToDate(a.created_at)}
+                </span>
+                <span>
+                  {a.status === 0 && (
+                    <Badge variant='secondary'>{t('Pending Review')}</Badge>
+                  )}
+                  {a.status === 1 && (
+                    <Badge variant='default'>{t('Approved')}</Badge>
+                  )}
+                  {a.status === 2 && (
+                    <Badge variant='destructive'>{t('Rejected')}</Badge>
+                  )}
+                </span>
+                <span className='flex w-32 justify-end gap-1'>
+                  {a.status === 0 && (
+                    <>
+                      {!isGroupChangeApp &&
+                        !isProfileChangeApp &&
+                        Boolean(a.site_url) && (
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            className='h-7'
+                            disabled={probeLoading}
+                            onClick={() => runProbe(a)}
+                          >
+                            {t('Probe')}
+                          </Button>
+                        )}
                       <Button
                         size='sm'
                         variant='outline'
                         className='h-7'
-                        disabled={probeLoading}
-                        onClick={() => runProbe(a)}
+                        onClick={() => openReview(a)}
                       >
-                        {t('Probe')}
+                        {t('Review')}
                       </Button>
-                    )}
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      className='h-7'
-                      onClick={() => openReview(a)}
-                    >
-                      {t('Review')}
-                    </Button>
-                  </>
-                )}
-              </span>
-            </div>
-          ))}
+                    </>
+                  )}
+                </span>
+              </div>
+            )
+          })}
           {!items.length && (
             <div className='text-muted-foreground px-3 py-8 text-center'>
               {t('No applications yet')}
@@ -551,223 +648,337 @@ function ApplicationsTab() {
       />
 
       <Dialog open={!!reviewing} onOpenChange={(o) => !o && setReviewing(null)}>
-        <DialogContent>
+        <DialogContent className='max-h-[90vh] max-w-lg overflow-y-auto'>
           <DialogHeader>
             <DialogTitle>
-              {t('Review')}: {reviewing?.site_name}
+              {t('Review')}: {reviewing?.shop_name || reviewing?.site_name}
             </DialogTitle>
           </DialogHeader>
-          <div className='space-y-3'>
-            <div className='rounded-md border p-2 text-xs'>
-              <p className='font-medium'>
-                {reviewing?.app_type === 'group_change'
-                  ? t('专属分组倍率 / Auto 路由变更申请')
-                  : t('新渠道与分组入驻申请')}
-              </p>
-              <p className='text-muted-foreground mt-1'>
-                {t('目标专属分组')}：{' '}
-                <span className='font-mono'>
-                  {reviewing?.group_name || '--'}
-                </span>
-                {' · '}
-                {t('申请倍率')}：{' '}
-                {typeof reviewing?.rate_multiplier === 'number'
-                  ? `${reviewing.rate_multiplier.toFixed(4)}x`
-                  : '--'}
-                {' · '}
-                Auto：{' '}
-                {reviewing?.join_auto_group ? t('申请加入') : t('不加入')}
-              </p>
-            </div>
-
-            {reviewing?.app_type !== 'group_change' && (
-              <>
-                <div className='rounded-md border p-2 text-xs'>
-                  <p className='mb-1 font-medium'>{t('Requested models')}</p>
-                  {quotes.map((q) => (
-                    <p key={q.model} className='font-mono'>
-                      {q.model}
-                      {q.upstream && q.upstream !== q.model
-                        ? ` ← ${q.upstream}`
-                        : ''}
-                      {typeof q.input_price === 'number' &&
-                      typeof q.output_price === 'number' &&
-                      q.input_price > 0 &&
-                      q.output_price > 0
-                        ? ` (基准价: $${q.input_price} / $${q.output_price} per 1M)`
-                        : ''}
-                      {q.pool ? `, ${q.pool}` : ''}
-                    </p>
-                  ))}
-                  {!quotes.length && (
-                    <p className='text-muted-foreground'>
-                      {t(
-                        'No models declared: the channel model list is filled from the site key at review time.'
-                      )}
+          {(() => {
+            const isGroupChange = reviewing?.app_type === 'group_change'
+            const isProfileChange = reviewing?.app_type === 'profile_change'
+            const isQualificationOnly =
+              !isGroupChange && !isProfileChange && !reviewing?.site_url
+            const tenureOpt = OPERATION_TENURE_OPTIONS.find(
+              (o) => o.value === reviewing?.operation_tenure
+            )
+            let reviewSummaryTitle = t('新渠道与分组入驻申请')
+            if (isProfileChange) {
+              reviewSummaryTitle = t('商户名称变更申请')
+            } else if (isGroupChange) {
+              reviewSummaryTitle = t('专属分组倍率 / Auto 路由变更申请')
+            } else if (isQualificationOnly) {
+              reviewSummaryTitle = t('纯资质入驻审核（过审后由商家配置渠道）')
+            }
+            return (
+              <div className='space-y-3'>
+                <div className='rounded-md border p-2.5 text-xs'>
+                  <p className='font-medium'>{reviewSummaryTitle}</p>
+                  {isProfileChange && (
+                    <p className='text-muted-foreground mt-1.5'>
+                      {t('原商户名称')}:{' '}
+                      <strong className='text-foreground'>
+                        {reviewing?.shop_name || reviewing?.site_name}
+                      </strong>{' '}
+                      → {t('申请新名称')}:{' '}
+                      <strong className='text-amber-600 dark:text-amber-400'>
+                        {reviewing?.requested_shop_name}
+                      </strong>
                     </p>
                   )}
-                </div>
-                <div className='space-y-1.5'>
-                  <Label htmlFor='merchant-review-upstream-kind'>
-                    {t('Upstream type')}
-                  </Label>
-                  <Select
-                    items={REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => ({
-                      value: option.value,
-                      label: t(option.labelKey),
-                    }))}
-                    value={upstreamKind}
-                    onValueChange={(next) => {
-                      if (next !== null) setUpstreamKind(next)
-                    }}
-                  >
-                    <SelectTrigger
-                      id='merchant-review-upstream-kind'
-                      className='w-full'
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent alignItemWithTrigger={false}>
-                      {REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {t(option.labelKey)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className='space-y-1.5'>
-                  <Label htmlFor='merchant-review-channel-type'>
-                    {t('Channel type')}
-                  </Label>
-                  <Select
-                    items={channelTypeItems}
-                    value={channelType}
-                    onValueChange={(next) => {
-                      if (next !== null) setChannelType(next)
-                    }}
-                  >
-                    <SelectTrigger
-                      id='merchant-review-channel-type'
-                      className='w-full'
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent alignItemWithTrigger={false}>
-                      {channelTypeItems.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className='space-y-1.5'>
-                  <Label>{t('Price sync')}</Label>
-                  <ToggleGroup
-                    value={[priceSync]}
-                    onValueChange={(values) => {
-                      const choice = PRICE_SYNC_OPTIONS.find(
-                        (option) => option.value === values[0]
-                      )
-                      if (choice) setPriceSync(choice.value)
-                    }}
-                    variant='outline'
-                    size='sm'
-                    aria-label={t('Price sync')}
-                  >
-                    {PRICE_SYNC_OPTIONS.map((option) => (
-                      <ToggleGroupItem key={option.value} value={option.value}>
-                        {t(option.labelKey)}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                </div>
-                <div className='space-y-1.5'>
-                  <Label htmlFor='merchant-review-pools'>
-                    {t('Pools (comma separated)')}
-                  </Label>
-                  <Input
-                    id='merchant-review-pools'
-                    value={pools}
-                    onChange={(e) => setPools(e.target.value)}
-                    placeholder={t('gpt-pro, gpt-plus')}
-                  />
-                </div>
-                <div className='space-y-1.5'>
-                  <Label htmlFor='merchant-review-profit-ratio'>
-                    {t('Profit ratio (0~1)')}
-                  </Label>
-                  <Input
-                    id='merchant-review-profit-ratio'
-                    value={profitRatio}
-                    onChange={(e) => setProfitRatio(e.target.value)}
-                  />
-                </div>
-              </>
-            )}
+                  {!isProfileChange && !isQualificationOnly && (
+                    <p className='text-muted-foreground mt-1'>
+                      {t('目标专属分组')}：{' '}
+                      <span className='font-mono'>
+                        {reviewing?.group_name || '--'}
+                      </span>
+                      {' · '}
+                      {t('申请倍率')}：{' '}
+                      {typeof reviewing?.rate_multiplier === 'number'
+                        ? `${reviewing.rate_multiplier.toFixed(4)}x`
+                        : '--'}
+                      {' · '}
+                      Auto：{' '}
+                      {reviewing?.join_auto_group ? t('申请加入') : t('不加入')}
+                    </p>
+                  )}
 
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <div className='space-y-1.5'>
-                <Label htmlFor='merchant-review-group-name'>
-                  {t('专属分组名称')}
-                </Label>
-                <Input
-                  id='merchant-review-group-name'
-                  value={groupName}
-                  readOnly={reviewing?.app_type === 'group_change'}
-                  onChange={(e) => setGroupName(e.target.value)}
-                  placeholder='my-shop-vip'
-                />
+                  {(reviewing?.platform_url ||
+                    reviewing?.operation_tenure ||
+                    reviewing?.contact_name ||
+                    reviewing?.contact_info ||
+                    reviewing?.payout_method ||
+                    reviewing?.payout_account) && (
+                    <div className='text-muted-foreground mt-2 space-y-1 border-t pt-2'>
+                      {reviewing?.platform_url && (
+                        <p>
+                          {t('Platform Website URL')}:{' '}
+                          <a
+                            href={reviewing.platform_url}
+                            target='_blank'
+                            rel='noreferrer'
+                            className='text-foreground hover:underline'
+                          >
+                            {reviewing.platform_url}
+                          </a>
+                          {tenureOpt
+                            ? ` · ${t('Tenure')}: ${t(tenureOpt.labelKey)}`
+                            : ''}
+                        </p>
+                      )}
+                      <p>
+                        {t('Contact')}: {reviewing?.contact_name || '--'} (
+                        {reviewing?.contact_info || '--'})
+                      </p>
+                      {reviewing?.description && (
+                        <p>
+                          {t('Notes')}: {reviewing.description}
+                        </p>
+                      )}
+                      <p>
+                        {t('Payout')}:{' '}
+                        {reviewing?.payout_method
+                          ? t(getPayoutMethodLabel(reviewing.payout_method))
+                          : '--'}{' '}
+                        · {reviewing?.payout_account || '--'}
+                        {reviewing?.payout_holder
+                          ? ` (${reviewing.payout_holder})`
+                          : ''}
+                      </p>
+                    </div>
+                  )}
+
+                  {isValidPayoutQrDataUrl(reviewing?.payout_qrcode) && (
+                    <div className='mt-2 flex items-center gap-3 border-t pt-2'>
+                      <div className='rounded border bg-white p-1'>
+                        <img
+                          src={reviewing?.payout_qrcode}
+                          alt={t('Payout QR Code')}
+                          className='size-24 object-contain'
+                        />
+                      </div>
+                      <span className='text-muted-foreground text-xs'>
+                        {t('Attached payout QR code')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {!isGroupChange && !isProfileChange && isQualificationOnly && (
+                  <div className='space-y-1.5'>
+                    <Label htmlFor='merchant-review-profit-ratio'>
+                      {t('Profit ratio (0~1)')}
+                    </Label>
+                    <Input
+                      id='merchant-review-profit-ratio'
+                      value={profitRatio}
+                      onChange={(e) => setProfitRatio(e.target.value)}
+                    />
+                  </div>
+                )}
+
+                {!isGroupChange && !isProfileChange && !isQualificationOnly && (
+                  <>
+                    <div className='rounded-md border p-2 text-xs'>
+                      <p className='mb-1 font-medium'>{t('Requested models')}</p>
+                      {quotes.map((q) => (
+                        <p key={q.model} className='font-mono'>
+                          {q.model}
+                          {q.upstream && q.upstream !== q.model
+                            ? ` ← ${q.upstream}`
+                            : ''}
+                          {typeof q.input_price === 'number' &&
+                          typeof q.output_price === 'number' &&
+                          q.input_price > 0 &&
+                          q.output_price > 0
+                            ? ` (基准价: $${q.input_price} / $${q.output_price} per 1M)`
+                            : ''}
+                          {q.pool ? `, ${q.pool}` : ''}
+                        </p>
+                      ))}
+                      {!quotes.length && (
+                        <p className='text-muted-foreground'>
+                          {t(
+                            'No models declared: the channel model list is filled from the site key at review time.'
+                          )}
+                        </p>
+                      )}
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='merchant-review-upstream-kind'>
+                        {t('Upstream type')}
+                      </Label>
+                      <Select
+                        items={REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => ({
+                          value: option.value,
+                          label: t(option.labelKey),
+                        }))}
+                        value={upstreamKind}
+                        onValueChange={(next) => {
+                          if (next !== null) setUpstreamKind(next)
+                        }}
+                      >
+                        <SelectTrigger
+                          id='merchant-review-upstream-kind'
+                          className='w-full'
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent alignItemWithTrigger={false}>
+                          {REVIEW_UPSTREAM_KIND_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='merchant-review-channel-type'>
+                        {t('Channel type')}
+                      </Label>
+                      <Select
+                        items={channelTypeItems}
+                        value={channelType}
+                        onValueChange={(next) => {
+                          if (next !== null) setChannelType(next)
+                        }}
+                      >
+                        <SelectTrigger
+                          id='merchant-review-channel-type'
+                          className='w-full'
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent alignItemWithTrigger={false}>
+                          {channelTypeItems.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label>{t('Price sync')}</Label>
+                      <ToggleGroup
+                        value={[priceSync]}
+                        onValueChange={(values) => {
+                          const choice = PRICE_SYNC_OPTIONS.find(
+                            (option) => option.value === values[0]
+                          )
+                          if (choice) setPriceSync(choice.value)
+                        }}
+                        variant='outline'
+                        size='sm'
+                        aria-label={t('Price sync')}
+                      >
+                        {PRICE_SYNC_OPTIONS.map((option) => (
+                          <ToggleGroupItem key={option.value} value={option.value}>
+                            {t(option.labelKey)}
+                          </ToggleGroupItem>
+                        ))}
+                      </ToggleGroup>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='merchant-review-pools'>
+                        {t('Pools (comma separated)')}
+                      </Label>
+                      <Input
+                        id='merchant-review-pools'
+                        value={pools}
+                        onChange={(e) => setPools(e.target.value)}
+                        placeholder={t('gpt-pro, gpt-plus')}
+                      />
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='merchant-review-profit-ratio'>
+                        {t('Profit ratio (0~1)')}
+                      </Label>
+                      <Input
+                        id='merchant-review-profit-ratio'
+                        value={profitRatio}
+                        onChange={(e) => setProfitRatio(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {!isProfileChange && !isQualificationOnly && (
+                  <>
+                    <div className='grid gap-3 sm:grid-cols-2'>
+                      <div className='space-y-1.5'>
+                        <Label htmlFor='merchant-review-group-name'>
+                          {t('专属分组名称')}
+                        </Label>
+                        <Input
+                          id='merchant-review-group-name'
+                          value={groupName}
+                          readOnly={isGroupChange}
+                          onChange={(e) => setGroupName(e.target.value)}
+                          placeholder='my-shop-vip'
+                        />
+                      </div>
+                      <div className='space-y-1.5'>
+                        <Label htmlFor='merchant-review-rate-multiplier'>
+                          {t('分组倍率（GroupRatio）')}
+                        </Label>
+                        <Input
+                          id='merchant-review-rate-multiplier'
+                          type='number'
+                          step='0.01'
+                          value={rateMultiplier}
+                          onChange={(e) => setRateMultiplier(e.target.value)}
+                          placeholder={t('Leave empty to keep the requested value')}
+                        />
+                      </div>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='merchant-review-group-desc'>
+                        {t('分组说明')}
+                      </Label>
+                      <Input
+                        id='merchant-review-group-desc'
+                        value={groupDesc}
+                        onChange={(e) => setGroupDesc(e.target.value)}
+                        placeholder={t('向终端用户展示的分组说明')}
+                      />
+                    </div>
+                    <div className='flex items-center justify-between gap-3 rounded-md border px-3 py-2'>
+                      <Label htmlFor='merchant-review-join-auto'>
+                        {t('加入 Auto 自动路由组（AutoGroups）')}
+                      </Label>
+                      <Switch
+                        id='merchant-review-join-auto'
+                        checked={joinAutoGroup}
+                        onCheckedChange={setJoinAutoGroup}
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className='space-y-1.5'>
+                  <Label htmlFor='merchant-review-note'>{t('Review Note')}</Label>
+                  <Input
+                    id='merchant-review-note'
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </div>
+                <div className='flex gap-2'>
+                  <Button onClick={() => review('approve')}>
+                    {t('Approve')}
+                  </Button>
+                  <Button
+                    variant='destructive'
+                    onClick={() => review('reject')}
+                  >
+                    {t('Reject')}
+                  </Button>
+                </div>
               </div>
-              <div className='space-y-1.5'>
-                <Label htmlFor='merchant-review-rate-multiplier'>
-                  {t('分组倍率（GroupRatio）')}
-                </Label>
-                <Input
-                  id='merchant-review-rate-multiplier'
-                  type='number'
-                  step='0.01'
-                  value={rateMultiplier}
-                  onChange={(e) => setRateMultiplier(e.target.value)}
-                  placeholder={t('Leave empty to keep the requested value')}
-                />
-              </div>
-            </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-group-desc'>{t('分组说明')}</Label>
-              <Input
-                id='merchant-review-group-desc'
-                value={groupDesc}
-                onChange={(e) => setGroupDesc(e.target.value)}
-                placeholder={t('向终端用户展示的分组说明')}
-              />
-            </div>
-            <div className='flex items-center justify-between gap-3 rounded-md border px-3 py-2'>
-              <Label htmlFor='merchant-review-join-auto'>
-                {t('加入 Auto 自动路由组（AutoGroups）')}
-              </Label>
-              <Switch
-                id='merchant-review-join-auto'
-                checked={joinAutoGroup}
-                onCheckedChange={setJoinAutoGroup}
-              />
-            </div>
-            <div className='space-y-1.5'>
-              <Label htmlFor='merchant-review-note'>{t('Review Note')}</Label>
-              <Input
-                id='merchant-review-note'
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-              />
-            </div>
-            <div className='flex gap-2'>
-              <Button onClick={() => review('approve')}>{t('Approve')}</Button>
-              <Button variant='destructive' onClick={() => review('reject')}>
-                {t('Reject')}
-              </Button>
-            </div>
-          </div>
+            )
+          })()}
         </DialogContent>
       </Dialog>
     </div>
@@ -778,11 +989,54 @@ function MerchantsTab() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
+  const [editing, setEditing] = useState<MerchantRow | null>(null)
+  const [profitRatio, setProfitRatio] = useState('0.95')
+  const [settleHoldDays, setSettleHoldDays] = useState('0')
+  const [minWithdraw, setMinWithdraw] = useState('0')
+  const [contactName, setContactName] = useState('')
+  const [contactInfo, setContactInfo] = useState('')
+  const [adminNote, setAdminNote] = useState('')
+  const [saving, setSaving] = useState(false)
+
   const merchantsQuery = useQuery({
     queryKey: ['merchant-admin', 'merchants', page],
     queryFn: () => getMerchants(page, PAGE_SIZE),
   })
   const items = merchantsQuery.data?.items ?? []
+
+  function openEdit(m: MerchantRow) {
+    setProfitRatio(String(m.profit_ratio ?? 0.95))
+    setSettleHoldDays(String(m.settle_hold_days ?? 0))
+    setMinWithdraw(String(m.min_withdraw ?? 0))
+    setContactName(m.contact_name ?? '')
+    setContactInfo(m.contact_info ?? '')
+    setAdminNote(m.admin_note ?? '')
+    setEditing(m)
+  }
+
+  async function saveEdit() {
+    if (!editing) return
+    setSaving(true)
+    try {
+      await updateMerchant(editing.id, {
+        profit_ratio: Number(profitRatio),
+        settle_hold_days: Number(settleHoldDays) || 0,
+        min_withdraw: Number(minWithdraw) || 0,
+        contact_name: contactName.trim(),
+        contact_info: contactInfo.trim(),
+        admin_note: adminNote.trim(),
+      })
+      toast.success(t('Merchant updated'))
+      setEditing(null)
+      queryClient.invalidateQueries({
+        queryKey: ['merchant-admin', 'merchants'],
+      })
+    } catch (error) {
+      handleServerError(error, t('Failed to update merchant'))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function toggleStatus(id: number, status: number) {
     try {
@@ -796,66 +1050,216 @@ function MerchantsTab() {
   }
 
   return (
-    <div className='rounded-xl border'>
-      <div className='text-muted-foreground grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 border-b px-3 py-2 text-xs'>
-        <span>{t('Site')}</span>
-        <span>{t('Username')}</span>
-        <span>{t('Balance (USD)')}</span>
-        <span>{t('Profit ratio')}</span>
-        <span className='w-24 text-right'>{t('Actions')}</span>
-      </div>
-      <div className='divide-y'>
-        {items.map((m) => (
-          <div
-            key={m.id}
-            className='grid grid-cols-[1fr_1fr_1fr_1fr_auto] items-center gap-2 px-3 py-2 text-sm'
-          >
-            <a
-              href={m.site_url}
-              target='_blank'
-              rel='noreferrer'
-              className='truncate hover:underline'
+    <div className='space-y-3'>
+      <div className='rounded-xl border'>
+        <div className='text-muted-foreground grid grid-cols-[1.2fr_1fr_1.3fr_1.1fr_auto] gap-2 border-b px-3 py-2 text-xs'>
+          <span>{t('Site / Code')}</span>
+          <span>{t('Contact / Username')}</span>
+          <span>{t('Wallet (Avail / T+N / Frozen)')}</span>
+          <span>{t('Terms')}</span>
+          <span className='w-36 text-right'>{t('Actions')}</span>
+        </div>
+        <div className='divide-y'>
+          {items.map((m) => (
+            <div
+              key={m.id}
+              className='grid grid-cols-[1.2fr_1fr_1.3fr_1.1fr_auto] items-center gap-2 px-3 py-2 text-sm'
             >
-              {m.site_name}
-              {m.status !== 1 && (
-                <Badge variant='destructive' className='ml-2'>
-                  {t('Suspended')}
-                </Badge>
-              )}
-            </a>
-            <span>{m.username || `#${m.user_id}`}</span>
-            <span className='font-mono'>
-              {formatCurrencyFromUSD(m.wallet?.balance, {
-                digitsLarge: 4,
-                digitsSmall: 4,
-              })}
-            </span>
-            <span>{(m.profit_ratio * 100).toFixed(0)}%</span>
-            <span className='flex w-24 justify-end'>
-              <Button
-                size='sm'
-                variant='outline'
-                className='h-7'
-                onClick={() => toggleStatus(m.id, m.status === 1 ? 2 : 1)}
-              >
-                {m.status === 1 ? t('Suspend') : t('Enable')}
-              </Button>
-            </span>
-          </div>
-        ))}
-        {!items.length && (
-          <div className='text-muted-foreground px-3 py-8 text-center'>
-            {t('No merchants yet')}
+              <div className='min-w-0'>
+                <a
+                  href={m.site_url}
+                  target='_blank'
+                  rel='noreferrer'
+                  className='block truncate hover:underline'
+                >
+                  {m.site_name}
+                </a>
+                <div className='flex flex-wrap items-center gap-1 text-xs'>
+                  {m.merchant_code && (
+                    <Badge variant='outline' className='font-mono'>
+                      {m.merchant_code}
+                    </Badge>
+                  )}
+                  {m.status !== 1 && (
+                    <Badge variant='destructive'>{t('Suspended')}</Badge>
+                  )}
+                </div>
+              </div>
+              <div className='min-w-0 text-xs'>
+                <p className='truncate font-medium'>
+                  {m.username || `#${m.user_id}`}
+                </p>
+                {(m.contact_name || m.contact_info) && (
+                  <p className='text-muted-foreground truncate'>
+                    {m.contact_name} {m.contact_info}
+                  </p>
+                )}
+              </div>
+              <div className='font-mono text-xs'>
+                <p>
+                  {formatCurrencyFromUSD(m.wallet?.balance, {
+                    digitsLarge: 4,
+                    digitsSmall: 4,
+                  })}
+                </p>
+                {((m.wallet?.pending_balance ?? 0) > 0 ||
+                  (m.wallet?.frozen_balance ?? 0) > 0) && (
+                  <p className='text-muted-foreground'>
+                    {t('Pending')}:{' '}
+                    {formatCurrencyFromUSD(m.wallet?.pending_balance, {
+                      digitsLarge: 2,
+                      digitsSmall: 2,
+                    })}{' '}
+                    / {t('Frozen')}:{' '}
+                    {formatCurrencyFromUSD(m.wallet?.frozen_balance, {
+                      digitsLarge: 2,
+                      digitsSmall: 2,
+                    })}
+                  </p>
+                )}
+              </div>
+              <div className='text-xs'>
+                <p>
+                  {(m.profit_ratio * 100).toFixed(0)}% · T+
+                  {m.settle_hold_days ?? 0}
+                </p>
+                {(m.min_withdraw ?? 0) > 0 && (
+                  <p className='text-muted-foreground'>
+                    {t('Min')}: ${Number(m.min_withdraw).toFixed(2)}
+                  </p>
+                )}
+              </div>
+              <span className='flex w-36 justify-end gap-1'>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  className='h-7'
+                  onClick={() => openEdit(m)}
+                >
+                  {t('Edit')}
+                </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  className='h-7'
+                  onClick={() => toggleStatus(m.id, m.status === 1 ? 2 : 1)}
+                >
+                  {m.status === 1 ? t('Suspend') : t('Enable')}
+                </Button>
+              </span>
+            </div>
+          ))}
+          {!items.length && (
+            <div className='text-muted-foreground px-3 py-8 text-center'>
+              {t('No merchants yet')}
+            </div>
+          )}
+        </div>
+        {(merchantsQuery.data?.total ?? 0) > page * PAGE_SIZE && (
+          <div className='border-t p-2 text-center'>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => setPage(page + 1)}
+            >
+              {t('Load more')}
+            </Button>
           </div>
         )}
       </div>
-      {(merchantsQuery.data?.total ?? 0) > page * PAGE_SIZE && (
-        <div className='border-t p-2 text-center'>
-          <Button variant='outline' size='sm' onClick={() => setPage(page + 1)}>
-            {t('Load more')}
-          </Button>
-        </div>
-      )}
+
+      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t('Edit Merchant')}: {editing?.site_name}{' '}
+              {editing?.merchant_code ? `(${editing.merchant_code})` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className='space-y-3'>
+            <div className='grid grid-cols-3 gap-3'>
+              <div className='space-y-1.5'>
+                <Label htmlFor='admin-merchant-profit'>
+                  {t('Profit ratio (0~1)')}
+                </Label>
+                <Input
+                  id='admin-merchant-profit'
+                  type='number'
+                  step='0.01'
+                  min='0'
+                  max='1'
+                  value={profitRatio}
+                  onChange={(e) => setProfitRatio(e.target.value)}
+                />
+              </div>
+              <div className='space-y-1.5'>
+                <Label htmlFor='admin-merchant-hold'>
+                  {t('Settle Hold (Days)')}
+                </Label>
+                <Input
+                  id='admin-merchant-hold'
+                  type='number'
+                  min='0'
+                  max='90'
+                  value={settleHoldDays}
+                  onChange={(e) => setSettleHoldDays(e.target.value)}
+                />
+              </div>
+              <div className='space-y-1.5'>
+                <Label htmlFor='admin-merchant-min-wd'>
+                  {t('Min Withdraw (USD)')}
+                </Label>
+                <Input
+                  id='admin-merchant-min-wd'
+                  type='number'
+                  min='0'
+                  step='1'
+                  value={minWithdraw}
+                  onChange={(e) => setMinWithdraw(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className='grid grid-cols-2 gap-3'>
+              <div className='space-y-1.5'>
+                <Label htmlFor='admin-merchant-contact-name'>
+                  {t('Contact Person')}
+                </Label>
+                <Input
+                  id='admin-merchant-contact-name'
+                  value={contactName}
+                  onChange={(e) => setContactName(e.target.value)}
+                />
+              </div>
+              <div className='space-y-1.5'>
+                <Label htmlFor='admin-merchant-contact-info'>
+                  {t('Contact Info')}
+                </Label>
+                <Input
+                  id='admin-merchant-contact-info'
+                  value={contactInfo}
+                  onChange={(e) => setContactInfo(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className='space-y-1.5'>
+              <Label htmlFor='admin-merchant-note'>{t('Admin Note')}</Label>
+              <Input
+                id='admin-merchant-note'
+                value={adminNote}
+                onChange={(e) => setAdminNote(e.target.value)}
+              />
+            </div>
+            <div className='flex justify-end gap-2'>
+              <Button variant='outline' onClick={() => setEditing(null)}>
+                {t('Cancel')}
+              </Button>
+              <Button disabled={saving} onClick={saveEdit}>
+                {saving ? t('Saving...') : t('Save')}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -865,6 +1269,7 @@ function AdminWithdrawalsTab() {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [proof, setProof] = useState('')
+  const [qrModal, setQrModal] = useState<MerchantWithdrawal | null>(null)
 
   const withdrawalsQuery = useQuery({
     queryKey: ['merchant-admin', 'withdrawals', page],
@@ -910,23 +1315,38 @@ function AdminWithdrawalsTab() {
           placeholder={t('Transaction ID / screenshot link')}
         />
       </div>
-      <div className='text-muted-foreground grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 border-b px-3 py-2 text-xs'>
+      <div className='text-muted-foreground grid grid-cols-[1fr_1.2fr_0.9fr_0.8fr_auto] gap-2 border-b px-3 py-2 text-xs'>
         <span>{t('Time')}</span>
-        <span>{t('Merchant')}</span>
+        <span>{t('Shop / Account')}</span>
         <span>{t('Amount (USD)')}</span>
         <span>{t('Status')}</span>
-        <span className='w-44 text-right'>{t('Actions')}</span>
+        <span className='w-52 text-right'>{t('Actions')}</span>
       </div>
       <div className='divide-y'>
         {items.map((w: MerchantWithdrawal) => (
           <div
             key={w.id}
-            className='grid grid-cols-[1fr_1fr_1fr_1fr_auto] items-center gap-2 px-3 py-2 text-sm'
+            className='grid grid-cols-[1fr_1.2fr_0.9fr_0.8fr_auto] items-center gap-2 px-3 py-2 text-sm'
           >
             <span className='text-muted-foreground'>
               {formatTimestampToDate(w.created_at)}
+              {w.trade_no && (
+                <span className='block font-mono text-xs'>{w.trade_no}</span>
+              )}
             </span>
-            <span>#{w.merchant_user_id}</span>
+            <div className='min-w-0'>
+              <span className='block truncate font-medium'>
+                {w.shop_name || `#${w.merchant_user_id}`}
+                {w.payout_method && (
+                  <Badge variant='outline' className='ml-1 text-xs'>
+                    {t(getPayoutMethodLabel(w.payout_method))}
+                  </Badge>
+                )}
+              </span>
+              <span className='text-muted-foreground block truncate text-xs'>
+                {w.account_info || '--'}
+              </span>
+            </div>
             <span className='font-mono'>
               {formatCurrencyFromUSD(w.amount, {
                 digitsLarge: 2,
@@ -934,7 +1354,18 @@ function AdminWithdrawalsTab() {
               })}
             </span>
             <span>{statusBadge(w.status)}</span>
-            <span className='flex w-44 justify-end gap-1'>
+            <span className='flex w-52 justify-end gap-1'>
+              {isValidPayoutQrDataUrl(w.payout_qrcode) && (
+                <Button
+                  size='sm'
+                  variant='outline'
+                  className='h-7 px-2'
+                  onClick={() => setQrModal(w)}
+                >
+                  <QrCode className='mr-1 size-3.5' />
+                  {t('QR')}
+                </Button>
+              )}
               {w.status === 0 && (
                 <>
                   <Button
@@ -980,6 +1411,39 @@ function AdminWithdrawalsTab() {
           </Button>
         </div>
       )}
+
+      <Dialog open={Boolean(qrModal)} onOpenChange={(o) => !o && setQrModal(null)}>
+        <DialogContent className='max-w-sm'>
+          <DialogHeader>
+            <DialogTitle>
+              {t('Scan QR to Pay')} ·{' '}
+              {qrModal?.shop_name || `#${qrModal?.merchant_user_id}`}
+            </DialogTitle>
+          </DialogHeader>
+          {qrModal && (
+            <div className='space-y-3'>
+              <div className='bg-muted/20 flex items-center justify-between rounded-lg border px-3 py-2 text-xs'>
+                <span>{qrModal.account_info || '--'}</span>
+                <span className='font-mono text-sm font-bold'>
+                  {formatCurrencyFromUSD(qrModal.amount, {
+                    digitsLarge: 2,
+                    digitsSmall: 2,
+                  })}
+                </span>
+              </div>
+              {isValidPayoutQrDataUrl(qrModal.payout_qrcode) && (
+                <div className='flex justify-center rounded-xl border bg-white p-3'>
+                  <img
+                    src={qrModal.payout_qrcode}
+                    alt={t('Payout QR Code')}
+                    className='max-h-64 max-w-64 object-contain'
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

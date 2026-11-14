@@ -86,7 +86,8 @@ func TestMerchantWithdrawalWalletLifecycle(t *testing.T) {
 	require.NoError(t, FreezeForWithdrawal(nil, 9, 4))
 	wallet, err := GetOrCreateMerchantWallet(9)
 	require.NoError(t, err)
-	assert.InDelta(t, 6.0, wallet.Balance, 1e-9, "申请提现应冻结（扣减）余额")
+	assert.InDelta(t, 6.0, wallet.Balance, 1e-9, "申请提现应冻结（扣减）可用余额")
+	assert.InDelta(t, 4.0, wallet.FrozenBalance, 1e-9, "申请提现应增加冻结中余额")
 
 	require.ErrorIs(t, FreezeForWithdrawal(nil, 9, 100), ErrInsufficientBalance,
 		"余额不足时不得透支")
@@ -95,12 +96,76 @@ func TestMerchantWithdrawalWalletLifecycle(t *testing.T) {
 	wallet, err = GetOrCreateMerchantWallet(9)
 	require.NoError(t, err)
 	assert.InDelta(t, 10.0, wallet.Balance, 1e-9, "拒绝提现应退回冻结金额")
+	assert.InDelta(t, 0.0, wallet.FrozenBalance, 1e-9, "拒绝提现应释放冻结余额")
 
+	require.NoError(t, FreezeForWithdrawal(nil, 9, 4))
 	require.NoError(t, ConfirmWithdrawalPaid(nil, 9, 4))
 	wallet, err = GetOrCreateMerchantWallet(9)
 	require.NoError(t, err)
-	assert.InDelta(t, 10.0, wallet.Balance, 1e-9)
+	assert.InDelta(t, 6.0, wallet.Balance, 1e-9)
+	assert.InDelta(t, 0.0, wallet.FrozenBalance, 1e-9, "打款确认应清空对应冻结余额")
 	assert.InDelta(t, 4.0, wallet.TotalWithdrawn, 1e-9, "打款确认只累计已提现")
+}
+
+// TestMerchantWalletTPlusNSettlementAndReversal 验证 T+N 待结算余额入账、到期解冻、平台抽佣与争议冲正。
+func TestMerchantWalletTPlusNSettlementAndReversal(t *testing.T) {
+	withMerchantTestDB(t, "sqlite")
+
+	dedup := "log:5001"
+	settleAt := int64(2_000_000_000)
+	earning := &MerchantEarning{
+		MerchantUserId:   77,
+		ChannelId:        8,
+		LogId:            5001,
+		DedupKey:         &dedup,
+		GrossAmount:      10.0,
+		Amount:           9.5,
+		CommissionAmount: 0.5,
+		Status:           MerchantEarningUnsettled,
+		SettleAt:         settleAt,
+		ModelName:        "gpt-4o",
+	}
+	require.NoError(t, RecordMerchantEarning(nil, earning))
+
+	wallet, err := GetMerchantWalletByUserId(77)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.0, wallet.Balance, 1e-9)
+	assert.InDelta(t, 9.5, wallet.PendingBalance, 1e-9)
+	assert.InDelta(t, 9.5, wallet.TotalEarned, 1e-9)
+	assert.InDelta(t, 0.5, wallet.TotalCommission, 1e-9)
+
+	// 未到期不应提前解冻
+	cnt, amt, err := SettleDueMerchantEarnings(settleAt - 10)
+	require.NoError(t, err)
+	assert.Zero(t, cnt)
+	assert.Zero(t, amt)
+
+	// 到期后批量解冻进入可用余额
+	cnt, amt, err = SettleDueMerchantEarnings(settleAt + 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, cnt)
+	assert.InDelta(t, 9.5, amt, 1e-9)
+
+	wallet, err = GetMerchantWalletByUserId(77)
+	require.NoError(t, err)
+	assert.InDelta(t, 9.5, wallet.Balance, 1e-9)
+	assert.InDelta(t, 0.0, wallet.PendingBalance, 1e-9)
+
+	// 管理员冲正扣回已结算分润
+	require.NoError(t, ReverseMerchantEarning(earning.Id, 1, "chargeback"))
+	wallet, err = GetMerchantWalletByUserId(77)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.0, wallet.Balance, 1e-9)
+	assert.InDelta(t, 0.0, wallet.TotalEarned, 1e-9)
+	assert.InDelta(t, 0.0, wallet.TotalCommission, 1e-9)
+
+	var persisted MerchantEarning
+	require.NoError(t, DB.First(&persisted, earning.Id).Error)
+	assert.Equal(t, MerchantEarningReversed, persisted.Status)
+
+	var ledgerCount int64
+	require.NoError(t, DB.Model(&FinanceLedger{}).Count(&ledgerCount).Error)
+	assert.EqualValues(t, 5, ledgerCount, "earning + commission + settle + reverse_earning + reverse_commission")
 }
 
 // withMerchantTestDB 为用例准备一个隔离数据库，并在结束时恢复全局句柄。
@@ -129,9 +194,9 @@ func withMerchantTestDB(t *testing.T, dialect string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	require.NoError(t, db.Migrator().DropTable("merchant_earnings", "merchant_wallets"))
-	require.NoError(t, db.AutoMigrate(&MerchantWallet{}, &MerchantEarning{}))
-	t.Cleanup(func() { _ = db.Migrator().DropTable("merchant_earnings", "merchant_wallets") })
+	require.NoError(t, db.Migrator().DropTable("finance_ledgers", "merchant_earnings", "merchant_wallets"))
+	require.NoError(t, db.AutoMigrate(&MerchantWallet{}, &MerchantEarning{}, &FinanceLedger{}))
+	t.Cleanup(func() { _ = db.Migrator().DropTable("finance_ledgers", "merchant_earnings", "merchant_wallets") })
 
 	previous := DB
 	DB = db

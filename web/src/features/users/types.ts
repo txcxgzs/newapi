@@ -63,6 +63,9 @@ export const userSchema = z.object({
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
+  admin_audit_reason_rules: z
+    .record(z.string(), z.record(z.string(), z.boolean()))
+    .optional(),
 })
 export type User = z.infer<typeof userSchema>
 
@@ -127,10 +130,12 @@ export interface UserFormData {
   group?: string // Only used when updating user
   remark?: string // Only used when updating user
   admin_permissions?: AdminPermissionMatrix
+  admin_audit_reason_rules?: AdminPermissionMatrix
 }
 
 export type ManageUserAction =
   | 'promote'
+  | 'promote_finance'
   | 'demote'
   | 'enable'
   | 'disable'

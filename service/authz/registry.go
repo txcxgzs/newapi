@@ -5,10 +5,12 @@ import "slices"
 // ActionDefinition describes a single action exposed by a resource. DefaultRoles
 // lists the role keys that receive this action as part of their baseline grants.
 type ActionDefinition struct {
-	Action         string   `json:"action"`
-	LabelKey       string   `json:"label_key"`
-	DescriptionKey string   `json:"description_key"`
-	DefaultRoles   []string `json:"-"`
+	Action             string   `json:"action"`
+	LabelKey           string   `json:"label_key"`
+	DescriptionKey     string   `json:"description_key"`
+	Sensitive          bool     `json:"sensitive,omitempty"`
+	DefaultAuditReason bool     `json:"default_audit_reason,omitempty"`
+	DefaultRoles       []string `json:"-"`
 }
 
 // ResourceDefinition describes a resource and the actions it exposes.
@@ -66,6 +68,43 @@ func PermissionsForRole(roleKey string) []Permission {
 		}
 	}
 	return permissions
+}
+
+// DefaultAuditReasonBaseline returns the catalog's default audit-reason flags
+// per resource/action.
+func DefaultAuditReasonBaseline() PermissionsMap {
+	result := make(PermissionsMap, len(registry))
+	for _, resource := range registry {
+		actions := make(map[string]bool, len(resource.Actions))
+		for _, action := range resource.Actions {
+			actions[action.Action] = action.DefaultAuditReason
+		}
+		result[resource.Resource] = actions
+	}
+	return result
+}
+
+// ResolveAuditReasonRules merges explicit user overrides with catalog defaults
+// for the user's granted actions. Root users are exempt unless explicitly needed.
+func ResolveAuditReasonRules(systemRole int, isRootRole int, explicit PermissionsMap) PermissionsMap {
+	if systemRole >= isRootRole {
+		return PermissionsMap{}
+	}
+	result := DefaultAuditReasonBaseline()
+	for resource, actions := range explicit {
+		if !isKnownResource(resource) {
+			continue
+		}
+		if result[resource] == nil {
+			result[resource] = make(map[string]bool)
+		}
+		for action, required := range actions {
+			if isKnownPermission(Permission{Resource: resource, Action: action}) {
+				result[resource][action] = required
+			}
+		}
+	}
+	return result
 }
 
 func actionHasRole(action ActionDefinition, roleKey string) bool {

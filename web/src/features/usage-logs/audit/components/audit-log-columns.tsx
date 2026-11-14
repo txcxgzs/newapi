@@ -60,17 +60,33 @@ export function useAuditLogColumns(
           size: 360,
           accessorFn: (entry) => {
             const detail = buildAuditDetails(entry, t)
-            return [detail.summary, detail.operation?.description]
+            return [
+              detail.summary,
+              detail.operation?.description,
+              detail.auditReason,
+            ]
               .filter(Boolean)
               .join(' · ')
           },
           cell: ({ row, getValue }) => {
-            const operation = buildAuditDetails(row.original, t).operation
+            const detail = buildAuditDetails(row.original, t)
+            const operation = detail.operation
+            const reason = detail.auditReason
             if (!operation) {
               return (
-                <TruncatedCell className='max-w-64'>
-                  {getValue<string>()}
-                </TruncatedCell>
+                <div className='min-w-0 space-y-1'>
+                  <TruncatedCell className='max-w-64'>
+                    {getValue<string>()}
+                  </TruncatedCell>
+                  {reason && (
+                    <TruncatedCell
+                      className='inline-flex max-w-full rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-700 dark:text-amber-300'
+                      tooltipContent={`${t('Audit reason')}: ${reason}`}
+                    >
+                      {t('Reason')}: {reason}
+                    </TruncatedCell>
+                  )}
+                </div>
               )
             }
             return (
@@ -95,6 +111,14 @@ export function useAuditLogColumns(
                     tooltipContent={operation.description}
                   >
                     {operation.description}
+                  </TruncatedCell>
+                )}
+                {reason && (
+                  <TruncatedCell
+                    className='inline-flex max-w-full rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-700 dark:text-amber-300'
+                    tooltipContent={`${t('Audit reason')}: ${reason}`}
+                  >
+                    {t('Reason')}: {reason}
                   </TruncatedCell>
                 )}
               </div>

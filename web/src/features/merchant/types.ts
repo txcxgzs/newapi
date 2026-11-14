@@ -50,15 +50,37 @@ export type UpstreamKind =
   | 'openai'
   | 'openai_models_pricing'
 
-export type MerchantAppType = 'channel' | 'group_change'
+export type MerchantAppType = 'channel' | 'group_change' | 'profile_change'
+
+export type MerchantPayoutMethod =
+  | ''
+  | 'usdt_trc20'
+  | 'usdt_bep20'
+  | 'alipay'
+  | 'wechat'
+  | 'bank'
+  | 'other'
 
 export interface MerchantApplication {
   id: number
   user_id: number
   app_type?: MerchantAppType
+  is_onboarding?: boolean
+  shop_name?: string
+  requested_shop_name?: string
+  platform_url?: string
+  operation_tenure?: string
   site_name: string
   site_url: string
   site_key: string
+  contact_name?: string
+  contact_info?: string
+  description?: string
+  payout_method?: string
+  payout_account?: string
+  payout_holder?: string
+  payout_qrcode?: string
+  agreed_terms?: boolean
   models: string
   upstream_kind: UpstreamKind
   group_name?: string
@@ -118,6 +140,8 @@ export interface MerchantUpstreamProbeResult {
 /** POST /api/merchant_manage/applications/:id/review 的审核结果。 */
 export interface MerchantReviewResult {
   app_type?: MerchantAppType
+  qualification_only?: boolean
+  shop_name?: string
   group_name?: string
   rate_multiplier?: number
   join_auto_group?: boolean
@@ -131,8 +155,22 @@ export interface MerchantReviewResult {
 export interface MerchantProfile {
   id: number
   user_id: number
+  merchant_code?: string
+  shop_name?: string
+  platform_url?: string
+  operation_tenure?: string
   site_name: string
   site_url: string
+  contact_name?: string
+  contact_info?: string
+  description?: string
+  payout_method?: string
+  payout_account?: string
+  payout_holder?: string
+  payout_qrcode?: string
+  settle_hold_days?: number
+  min_withdraw?: number
+  admin_note?: string
   profit_ratio: number
   status: number
 }
@@ -140,8 +178,11 @@ export interface MerchantProfile {
 export interface MerchantWallet {
   merchant_user_id: number
   balance: number
+  pending_balance?: number
+  frozen_balance?: number
   total_earned: number
   total_withdrawn: number
+  total_commission?: number
   updated_at: number
 }
 
@@ -188,9 +229,14 @@ export interface MerchantLog {
 
 export interface PortalSummary {
   profit_ratio: number
+  shop_name?: string
+  platform_url?: string
+  operation_tenure?: string
+  payout_qrcode?: string
   site_name: string
   site_url: string
   channel_count: number
+  profile?: MerchantProfile
   wallet?: MerchantWallet
   traffic_24h?: MerchantTraffic24h
   groups_24h?: MerchantGroupTraffic[]
@@ -202,7 +248,12 @@ export interface MerchantEarning {
   merchant_user_id: number
   channel_id: number
   log_id: number
+  gross_amount?: number
   amount: number
+  commission_amount?: number
+  status?: number
+  settle_at?: number
+  settled_at?: number
   model_name: string
   created_at: number
 }
@@ -251,13 +302,21 @@ export interface MerchantLogsPage extends PageInfo<MerchantLog> {
 
 export interface MerchantWithdrawal {
   id: number
+  trade_no?: string
   merchant_user_id: number
+  shop_name?: string
+  merchant_code?: string
+  merchant_username?: string
   amount: number
   status: number // 0 pending 1 approved 2 paid 3 rejected
+  payout_method?: string
   account_info: string
+  payout_qrcode?: string
   note: string
   review_note: string
   paid_proof: string
+  reviewed_by?: number
+  reviewed_at?: number
   created_at: number
   paid_at: number
 }
@@ -361,6 +420,9 @@ export interface AdminOverviewChannel {
 export interface AdminOverviewMerchant {
   user_id: number
   username: string
+  shop_name?: string
+  platform_url?: string
+  operation_tenure?: string
   site_name: string
   site_url: string
   status: number

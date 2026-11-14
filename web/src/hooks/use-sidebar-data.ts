@@ -24,6 +24,7 @@ import {
   FileText,
   FlaskConical,
   Key,
+  Landmark,
   LayoutDashboard,
   ListTodo,
   MessageSquare,
@@ -42,6 +43,10 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import type { SidebarBadges, SidebarData } from '@/components/layout/types'
+import {
+  ADMIN_PERMISSION_ACTIONS,
+  ADMIN_PERMISSION_RESOURCES,
+} from '@/lib/admin-permissions'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -99,6 +104,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             title: t('Audit Logs'),
             url: '/usage-logs/audit',
             icon: ClipboardList,
+            excludedRoles: [ROLE.FINANCE],
           },
           {
             title: t('Task Logs'),
@@ -123,6 +129,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             url: '/merchant',
             icon: Store,
             requiredRole: ROLE.MERCHANT,
+            excludedRoles: [ROLE.FINANCE],
           },
           {
             title: t('Merchant Application'),
@@ -150,32 +157,67 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             title: t('Channels'),
             url: '/channels',
             icon: Radio,
+            requiredRole: ROLE.ADMIN,
+            requiredPermission: {
+              resource: ADMIN_PERMISSION_RESOURCES.CHANNEL,
+              action: ADMIN_PERMISSION_ACTIONS.READ,
+            },
           },
           {
             title: t('Models'),
             url: '/models/metadata',
             icon: Box,
+            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('Users'),
             url: '/users',
             icon: Users,
+            requiredRole: ROLE.ADMIN,
+            requiredPermission: {
+              resource: ADMIN_PERMISSION_RESOURCES.USER,
+              action: ADMIN_PERMISSION_ACTIONS.READ,
+            },
           },
           {
             title: t('Merchants'),
             url: '/merchant-admin',
             icon: Store,
             requiredRole: ROLE.ADMIN,
+            requiredPermission: {
+              resource: ADMIN_PERMISSION_RESOURCES.MERCHANT,
+              action: ADMIN_PERMISSION_ACTIONS.READ,
+            },
+          },
+          {
+            title: t('Finance Center'),
+            url: '/finance',
+            icon: Landmark,
+            requiredRole: ROLE.FINANCE,
+            requiredPermission: {
+              resource: ADMIN_PERMISSION_RESOURCES.FINANCE,
+              action: ADMIN_PERMISSION_ACTIONS.READ,
+            },
           },
           {
             title: t('Redemption Codes'),
             url: '/redemption-codes',
             icon: Ticket,
+            requiredRole: ROLE.ADMIN,
+            requiredPermission: {
+              resource: ADMIN_PERMISSION_RESOURCES.REDEMPTION,
+              action: ADMIN_PERMISSION_ACTIONS.READ,
+            },
           },
           {
             title: t('Subscriptions'),
             url: '/subscriptions',
             icon: CreditCard,
+            requiredRole: ROLE.ADMIN,
+            requiredPermission: {
+              resource: ADMIN_PERMISSION_RESOURCES.BILLING,
+              action: ADMIN_PERMISSION_ACTIONS.READ,
+            },
           },
           {
             title: t('System Info'),

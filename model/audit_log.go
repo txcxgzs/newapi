@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -89,6 +90,18 @@ func RecordAuditLog(c *gin.Context, entry AuditLog) {
 				entry.AuthMethod = "access_token"
 			}
 		}
+		if entry.Other.AuditReason == "" {
+			if reason := strings.TrimSpace(common.GetContextKeyString(c, constant.ContextKeyAuditReason)); reason != "" {
+				entry.Other.AuditReason = reason
+			}
+		}
+	}
+	if entry.Other.AuditReason != "" && !strings.Contains(entry.Content, entry.Other.AuditReason) {
+		if entry.Content != "" {
+			entry.Content += " | Reason: " + entry.Other.AuditReason
+		} else {
+			entry.Content = "Reason: " + entry.Other.AuditReason
+		}
 	}
 	if entry.CreatedAt == 0 {
 		entry.CreatedAt = common.GetTimestamp()
@@ -100,7 +113,7 @@ func RecordAuditLog(c *gin.Context, entry AuditLog) {
 		entry.EventId = common.NewRequestId()
 	}
 	switch entry.ActorRole {
-	case common.RoleCommonUser, common.RoleMerchant, common.RoleAdminUser, common.RoleRootUser:
+	case common.RoleCommonUser, common.RoleMerchant, common.RoleFinanceUser, common.RoleAdminUser, common.RoleRootUser:
 	default:
 		logger.LogError(ctx, common.LogText("audit actor role unavailable (request_id=%s, actor_role=%d)", entry.RequestId, entry.ActorRole))
 		entry.ActorRole = 0 // Unknown actors remain visible to root only.
@@ -147,7 +160,7 @@ func GetAuditLogs(filter AuditLogFilter, start, limit, viewerRole int) ([]*Audit
 		})))
 	}
 	if viewerRole < common.RoleRootUser {
-		query = query.Where("actor_role IN ?", []int{common.RoleCommonUser, common.RoleMerchant, common.RoleAdminUser})
+		query = query.Where("actor_role IN ?", []int{common.RoleCommonUser, common.RoleMerchant, common.RoleFinanceUser, common.RoleAdminUser})
 	}
 	if filter.UserId > 0 {
 		query = query.Where("user_id = ?", filter.UserId)

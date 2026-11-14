@@ -73,14 +73,6 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenView("View Passkey, two-factor, and sign-in binding status."),
 		accessTokenEdit("Includes changes that require security verification, such as password, two-factor settings, and account deletion."),
 	}},
-	{Resource: "user", LabelKey: "Users", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View users, their sign-in bindings, and permission settings."),
-		accessTokenEdit("Create, edit, disable, and delete users, and reset their security settings."),
-	}},
-	{Resource: "billing", LabelKey: "Billing management", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View all top-up records, subscription plans, and user subscriptions."),
-		accessTokenEdit("Complete top-up orders and manage subscription plans and user subscriptions."),
-	}},
 	{Resource: "model", LabelKey: "Models", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View models and vendors, and preview upstream sync."),
 		accessTokenEdit("Edit models and vendors, and sync them from upstream."),
@@ -91,10 +83,6 @@ var accessTokenStaticResources = []AccessTokenResource{
 	}},
 	{Resource: "log", LabelKey: "Logs", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View all users' usage logs, statistics, and tasks."),
-	}},
-	{Resource: "redemption", LabelKey: "Redemption codes", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View redemption codes."),
-		accessTokenEdit("Create, edit, and delete redemption codes."),
 	}},
 	{Resource: "group", LabelKey: "Groups", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View groups and prefill groups."),
@@ -131,7 +119,7 @@ func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 		resource.Actions = slices.Clone(resource.Actions)
 		resources[resource.group] = append(resources[resource.group], resource)
 	}
-	if role >= common.RoleAdminUser {
+	if role >= common.RoleFinanceUser {
 		for _, definition := range authz.Catalog() {
 			resource := AccessTokenResource{Resource: definition.Resource, LabelKey: definition.LabelKey}
 			for _, action := range definition.Actions {

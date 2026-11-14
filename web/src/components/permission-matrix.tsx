@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Check, ChevronDown, Info } from 'lucide-react'
+import { Check, ChevronDown, Info, ShieldAlert } from 'lucide-react'
 import { useId } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -48,6 +48,8 @@ export type PermissionMatrixGroup = {
 type PermissionMatrixProps = {
   value: AdminPermissionMatrix
   onChange: (value: AdminPermissionMatrix) => void
+  auditReasonRules?: AdminPermissionMatrix
+  onAuditReasonRulesChange?: (value: AdminPermissionMatrix) => void
   disabled?: boolean
 } & (
   | { resources: PermissionResourceDef[] }
@@ -61,6 +63,8 @@ type PermissionResourceRowProps = {
   resource: PermissionResourceDef
   value: AdminPermissionMatrix
   onChange: (value: AdminPermissionMatrix) => void
+  auditReasonRules?: AdminPermissionMatrix
+  onAuditReasonRulesChange?: (value: AdminPermissionMatrix) => void
   disabled?: boolean
   className: string
 }
@@ -81,6 +85,8 @@ export function PermissionMatrix(props: PermissionMatrixProps) {
             resource={resource}
             value={props.value}
             onChange={props.onChange}
+            auditReasonRules={props.auditReasonRules}
+            onAuditReasonRulesChange={props.onAuditReasonRulesChange}
             disabled={props.disabled}
             className='px-3'
           />
@@ -146,6 +152,8 @@ export function PermissionMatrix(props: PermissionMatrixProps) {
                       resource={resource}
                       value={props.value}
                       onChange={props.onChange}
+                      auditReasonRules={props.auditReasonRules}
+                      onAuditReasonRulesChange={props.onAuditReasonRulesChange}
                       disabled={props.disabled}
                       className='pr-3 pl-9'
                     />
@@ -196,40 +204,72 @@ function PermissionResourceRow(props: PermissionResourceRowProps) {
           </TooltipContent>
         </Tooltip>
       </div>
-      <div className='flex min-w-0 flex-1 flex-wrap gap-1.5'>
+      <div className='flex min-w-0 flex-1 flex-wrap gap-2'>
         {resource.actions.map((option) => {
           const pressed =
             props.value[resource.resource]?.[option.action] === true
+          const requireReason =
+            props.auditReasonRules?.[resource.resource]?.[option.action] ??
+            Boolean(option.default_audit_reason)
+          const canConfigureReason =
+            Boolean(props.onAuditReasonRulesChange) && pressed
           const descriptionId = `${props.idPrefix}-${resource.resource}-${option.action}`
           return (
-            <Toggle
-              key={option.action}
-              variant='outline'
-              size='sm'
-              pressed={pressed}
-              disabled={props.disabled}
-              aria-describedby={descriptionId}
-              onPressedChange={(next) => {
-                props.onChange({
-                  ...props.value,
-                  [resource.resource]: {
-                    ...props.value[resource.resource],
-                    [option.action]: next,
-                  },
-                })
-              }}
-              className={cn(
-                'h-auto min-h-7 max-w-full font-normal whitespace-normal',
-                pressed &&
-                  'border-primary bg-primary/10! text-primary hover:bg-primary/15'
+            <div key={option.action} className='flex flex-col items-start gap-1'>
+              <Toggle
+                variant='outline'
+                size='sm'
+                pressed={pressed}
+                disabled={props.disabled}
+                aria-describedby={descriptionId}
+                onPressedChange={(next) => {
+                  props.onChange({
+                    ...props.value,
+                    [resource.resource]: {
+                      ...props.value[resource.resource],
+                      [option.action]: next,
+                    },
+                  })
+                }}
+                className={cn(
+                  'h-auto min-h-7 max-w-full font-normal whitespace-normal',
+                  pressed &&
+                    'border-primary bg-primary/10! text-primary hover:bg-primary/15'
+                )}
+              >
+                {pressed && <Check aria-hidden='true' />}
+                {t(option.label_key)}
+                <span id={descriptionId} hidden>
+                  {t(option.description_key)}
+                </span>
+              </Toggle>
+              {canConfigureReason && (
+                <button
+                  type='button'
+                  disabled={props.disabled}
+                  onClick={() => {
+                    props.onAuditReasonRulesChange?.({
+                      ...props.auditReasonRules,
+                      [resource.resource]: {
+                        ...props.auditReasonRules?.[resource.resource],
+                        [option.action]: !requireReason,
+                      },
+                    })
+                  }}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors',
+                    requireReason
+                      ? 'border border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
+                      : 'border border-dashed border-muted-foreground/40 text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <ShieldAlert className='size-2.5' aria-hidden='true' />
+                  {requireReason
+                    ? t('Require audit reason')
+                    : t('No audit reason')}
+                </button>
               )}
-            >
-              {pressed && <Check aria-hidden='true' />}
-              {t(option.label_key)}
-              <span id={descriptionId} hidden>
-                {t(option.description_key)}
-              </span>
-            </Toggle>
+            </div>
           )
         })}
       </div>
