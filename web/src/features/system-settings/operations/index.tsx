@@ -64,6 +64,10 @@ const defaultOperationsSettings: OperationsSettings = {
   'perf_metrics_setting.flush_interval': 5,
   'perf_metrics_setting.bucket_time': 'hour',
   'perf_metrics_setting.retention_days': 0,
+  'market_setting.enable_floor_protection': true,
+  'market_setting.upstream_usd_cny_rate': 6.6707,
+  'market_setting.fee_multiplier': 1.06,
+  'market_setting.min_profit_mult': 1.5,
 }
 
 export function OperationsSettings() {

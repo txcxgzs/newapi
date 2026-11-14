@@ -4008,7 +4008,7 @@
     "New API &lt;noreply@example.com&gt;": "API mới &lt;noreply@example.com&gt;",
     "New API Project Repository:": "Kho lưu trữ Dự án API Mới:",
     "New API pricing API": "New API pricing API",
-    "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "Upstream New API có API giá công khai nên tỷ lệ được đồng bộ tự động; upstream Sub2API và tương thích OpenAI không có API giá và sẽ niêm yết theo giá chuẩn của nền tảng.",
+    "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "Upstream New API và OpenAI /v1/models pricing protocol có API giá nên tỷ lệ được đồng bộ tự động; upstream Sub2API và tương thích OpenAI không có API giá và sẽ niêm yết theo giá chuẩn của nền tảng.",
     "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently": "Kênh kết nối linh hoạt của New API cho phép cấu hình địa chỉ thượng nguồn và xác thực theo từng điểm cuối, chọn chuyển tiếp nguyên bản hoặc chuyển đổi giao thức được hỗ trợ, đồng thời cấu hình riêng danh sách mô hình và truy vấn số dư",
     "New Format Template": "Mẫu định dạng mới",
     "New Group": "Nhóm mới",
@@ -8074,6 +8074,17 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 Công ty của bạn. Mọi quyền được bảo lưu.",
     "、": ", ",
     "，": ", ",
-    "，and ": " và "
+    "，and ": " và ",
+    "Price Sync & Risk Control": "Đồng bộ giá và kiểm soát rủi ro",
+    "Enable floor protection": "Bật bảo vệ giá sàn",
+    "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.": "Giữ giá niêm yết hiện tại cho đến khi chi phí upstream vượt giá an toàn tối thiểu; khi vượt, tự động tăng giá.",
+    "Upstream purchase USD/CNY rate": "Tỷ giá mua USD/CNY từ upstream",
+    "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.": "Tỷ giá dùng để quy đổi chi phí USD từ upstream sang đơn vị tính phí của nền tảng. Tỷ giá này độc lập với tỷ giá USD nạp tiền ở giao diện người dùng.",
+    "Fee multiplier": "Hệ số phí",
+    "Multiplier applied to the upstream cost to cover payment and channel fees.": "Hệ số áp dụng cho chi phí upstream để bù phí thanh toán và phí kênh.",
+    "Minimum profit multiplier": "Hệ số lợi nhuận tối thiểu",
+    "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.": "Hệ số lợi nhuận tối thiểu áp dụng trên chi phí đã gồm phí để tính giá an toàn tối thiểu.",
+    "Floor protection is off: every sync overwrites the listed price with the minimum safe price.": "Bảo vệ giá sàn đã tắt: mỗi lần đồng bộ sẽ ghi đè giá niêm yết bằng giá an toàn tối thiểu.",
+    "Save price sync settings": "Lưu cài đặt đồng bộ giá"
   }
 }

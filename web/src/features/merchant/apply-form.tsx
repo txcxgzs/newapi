@@ -287,7 +287,7 @@ export function MerchantApplyForm({ onSubmitted }: MerchantApplyFormProps) {
           className='text-muted-foreground text-xs'
         >
           {t(
-            'New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.'
+            'New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.'
           )}
         </p>
       </div>

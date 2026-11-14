@@ -64,6 +64,9 @@ type Channel struct {
 	MerchantId  int   `json:"merchant_id" gorm:"default:0;index"` // 归属商家用户ID，0=平台自营
 	AutoRouting *bool `json:"auto_routing" gorm:"default:false"`  // 纳入智能路由：按质量分层+比价自动调 priority/weight
 	PriceSync   *bool `json:"price_sync" gorm:"default:false"`    // 自动同步该渠道上游的挂牌报价到盘口
+	// PriceSyncProtocol 报价同步协议；空值按上游类型自动识别，
+	// openai_models_pricing 表示通过带鉴权的 /v1/models 读取 USD/1M-token 价格。
+	PriceSyncProtocol string `json:"price_sync_protocol" gorm:"type:varchar(32);default:''"`
 
 	// RateMultiplier 渠道倍率：商家上传该渠道时填写的唯一价格参数。
 	// 语义为"相对平台标准价的折扣/溢价系数"（对标 Sub2API 的 rate_multiplier），
@@ -606,6 +609,11 @@ func (channel *Channel) GetPriceSync() bool {
 		return false
 	}
 	return *channel.PriceSync
+}
+
+// GetPriceSyncProtocol 读取渠道的报价同步协议；空值表示按站址自动识别。
+func (channel *Channel) GetPriceSyncProtocol() string {
+	return strings.TrimSpace(channel.PriceSyncProtocol)
 }
 
 func (channel *Channel) GetMerchantId() int {

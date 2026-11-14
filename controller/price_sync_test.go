@@ -20,6 +20,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 )
 
@@ -225,6 +227,73 @@ func TestFetchChannelQuoteDraftsReadsNewAPIPricing(t *testing.T) {
 	assert.InDelta(t, 10.0, drafts[0].OutputPrice, 1e-9)
 }
 
+func TestParseOpenAIModelsPricingQuotes(t *testing.T) {
+	body := []byte(`{"data":[
+		{"id":"gpt-4o","pricing":{"currency":"USD","input_per_m":2.5,"cached_input_per_m":1.25,"output_per_m":10}},
+		{"id":"no-currency","pricing":{"currency":"","input_per_m":1,"output_per_m":2}},
+		{"id":"eur-model","pricing":{"currency":"EUR","input_per_m":1,"output_per_m":2}},
+		{"id":"no-pricing"},
+		{"id":"zero-input","pricing":{"currency":"USD","input_per_m":0,"output_per_m":2}},
+		{"id":"zero-output","pricing":{"currency":"USD","input_per_m":1,"output_per_m":0}},
+		{"id":"negative-output","pricing":{"currency":"USD","input_per_m":1,"output_per_m":-1}},
+		{"id":"","pricing":{"currency":"USD","input_per_m":1,"output_per_m":2}}
+	]}`)
+	drafts, err := parseOpenAIModelsPricingQuotes(body)
+	require.NoError(t, err)
+	require.Len(t, drafts, 2, "只有 USD、缺价格、非美元价格之外的模型都应被保留")
+	assert.Equal(t, channelQuoteDraft{ModelName: "gpt-4o", InputPrice: 2.5, OutputPrice: 10}, drafts[0])
+	assert.Equal(t, channelQuoteDraft{ModelName: "no-currency", InputPrice: 1, OutputPrice: 2}, drafts[1])
+
+	_, err = parseOpenAIModelsPricingQuotes([]byte(`{"data":[{"id":"gpt-4o"}]}`))
+	require.ErrorIs(t, err, errPriceUnsupported, "没有可用报价时按不支持自动同步降级")
+}
+
+func TestFetchChannelQuoteDraftsOpenAIModelsPricingUsesBearerKey(t *testing.T) {
+	withPriceSyncTestClient(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != openAIModelsPricingPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-first" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","pricing":{"currency":"USD","input_per_m":2.5,"output_per_m":10}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	baseURL := server.URL
+	channel := &model.Channel{
+		BaseURL:           &baseURL,
+		Key:               "sk-first\nsk-second",
+		PriceSyncProtocol: string(service.UpstreamKindOpenAIModelsPricing),
+	}
+
+	drafts, err := fetchChannelQuoteDrafts(context.Background(), channel)
+
+	require.NoError(t, err)
+	require.Len(t, drafts, 1)
+	assert.Equal(t, "gpt-4o", drafts[0].ModelName)
+	assert.InDelta(t, 2.5, drafts[0].InputPrice, 1e-9)
+	assert.InDelta(t, 10.0, drafts[0].OutputPrice, 1e-9)
+}
+
+func TestFetchChannelQuoteDraftsModelsPricingProtocolNeedsKey(t *testing.T) {
+	withPriceSyncTestClient(t)
+	baseURL := "https://upstream.example.com"
+	channel := &model.Channel{
+		BaseURL:           &baseURL,
+		PriceSyncProtocol: string(service.UpstreamKindOpenAIModelsPricing),
+	}
+
+	_, err := fetchChannelQuoteDrafts(context.Background(), channel)
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errPriceUnsupported)
+	assert.Contains(t, err.Error(), "API Key")
+}
+
 func TestFetchChannelQuoteDraftsReportsUnreachableUpstream(t *testing.T) {
 	withPriceSyncTestClient(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -377,4 +446,260 @@ func TestSyncQuotesForChannelWithoutDeclaredModelsWritesNoQuotes(t *testing.T) {
 	require.NoError(t, db.Where("channel_id = ?", declared.Id).First(&quote).Error)
 	assert.Equal(t, "declared-model", quote.ModelName)
 	assert.Equal(t, model.QuoteSourceAuto, quote.Source)
+}
+
+// TestSyncQuotesForChannelFollowsModelMapping 回归：
+// 上游按 deepseek-v4.1-flash-fast 报价、渠道对外只声明自定义名
+// deepseek-v4.1-flash-official 时，必须沿 model_mapping 反解到对外模型名落盘，
+// 不能只按上游原名查找，否则该渠道永远等不到自动报价。
+func TestSyncQuotesForChannelFollowsModelMapping(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.ChannelQuote{}))
+
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	model.DB, model.LOG_DB = db, db
+	t.Cleanup(func() { model.DB, model.LOG_DB = previousDB, previousLogDB })
+
+	channel := &model.Channel{
+		Type:         constant.ChannelTypeOpenAI,
+		Key:          "sk-price-sync-mapping",
+		Name:         "mapped-models",
+		Status:       common.ChannelStatusEnabled,
+		Group:        "default",
+		Models:       "deepseek-v4.1-flash-official",
+		ModelMapping: common.GetPointer(`{"deepseek-v4.1-flash-official":"deepseek-v4.1-flash-fast"}`),
+	}
+	require.NoError(t, db.Create(channel).Error)
+
+	written, err := syncQuotesForChannel(channel, []channelQuoteDraft{
+		{ModelName: "deepseek-v4.1-flash-fast", InputPrice: 1.06, OutputPrice: 2.12},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, written)
+
+	var quote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ?", channel.Id).First(&quote).Error)
+	assert.Equal(t, "deepseek-v4.1-flash-official", quote.ModelName, "应沿模型重定向反解为对外模型名")
+	assert.InDelta(t, 1.06, quote.InputPrice, 1e-9)
+	assert.InDelta(t, 2.12, quote.OutputPrice, 1e-9)
+	assert.Equal(t, model.QuoteSourceAuto, quote.Source)
+}
+
+// withPriceSyncMarketSetting 固定本轮测试使用的市场成本参数，并在用例结束后恢复。
+func withPriceSyncMarketSetting(t *testing.T, rate, fee, profit float64, floor bool) {
+	t.Helper()
+	previous := operation_setting.GetMarketSetting()
+	updated := previous
+	updated.UpstreamUSDCNYRate = rate
+	updated.FeeMultiplier = fee
+	updated.MinProfitMult = profit
+	updated.EnableFloorProtection = floor
+	operation_setting.SetMarketSetting(updated)
+	t.Cleanup(func() { operation_setting.SetMarketSetting(previous) })
+}
+
+// newPriceSyncQuoteTestDB 为报价同步用例准备独立的 SQLite 库并接管 model.DB。
+func newPriceSyncQuoteTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.ChannelQuote{}))
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	model.DB, model.LOG_DB = db, db
+	t.Cleanup(func() { model.DB, model.LOG_DB = previousDB, previousLogDB })
+	return db
+}
+
+func TestSyncQuotesForChannelFloorProtection(t *testing.T) {
+	cases := []struct {
+		name        string
+		floor       bool
+		existing    *model.ChannelQuote
+		input       float64
+		output      float64
+		wantInput   float64
+		wantOutput  float64
+		wantSource  string
+		wantWritten int
+	}{
+		{
+			name:       "keeps current manual price above floor",
+			floor:      true,
+			existing:   &model.ChannelQuote{InputPrice: 100, OutputPrice: 200, Source: model.QuoteSourceManual},
+			input:      1,
+			output:     2,
+			wantInput:  100,
+			wantOutput: 200,
+			wantSource: model.QuoteSourceManual,
+		},
+		{
+			name:        "raises current manual price when floor is breached",
+			floor:       true,
+			existing:    &model.ChannelQuote{InputPrice: 1, OutputPrice: 2, Source: model.QuoteSourceManual},
+			input:       1,
+			output:      2,
+			wantInput:   10.6064,
+			wantOutput:  21.2128,
+			wantSource:  model.QuoteSourceAuto,
+			wantWritten: 1,
+		},
+		{
+			name:        "raises only breached output while keeping input above floor",
+			floor:       true,
+			existing:    &model.ChannelQuote{InputPrice: 50, OutputPrice: 2, Source: model.QuoteSourceManual},
+			input:       1,
+			output:      2,
+			wantInput:   50,
+			wantOutput:  21.2128,
+			wantSource:  model.QuoteSourceAuto,
+			wantWritten: 1,
+		},
+		{
+			name:        "overwrites current price when protection is disabled",
+			floor:       false,
+			existing:    &model.ChannelQuote{InputPrice: 100, OutputPrice: 200, Source: model.QuoteSourceManual},
+			input:       1,
+			output:      2,
+			wantInput:   10.6064,
+			wantOutput:  21.2128,
+			wantSource:  model.QuoteSourceAuto,
+			wantWritten: 1,
+		},
+		{
+			name:        "writes floor for a new quote",
+			floor:       true,
+			input:       0.45,
+			output:      0.9,
+			wantInput:   4.7729,
+			wantOutput:  9.5458,
+			wantSource:  model.QuoteSourceAuto,
+			wantWritten: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newPriceSyncQuoteTestDB(t)
+			withPriceSyncMarketSetting(t, 6.6707, 1.06, 1.5, tc.floor)
+			channel := &model.Channel{
+				Type:              constant.ChannelTypeOpenAI,
+				Key:               "sk-floor-" + tc.name,
+				Name:              "floor-" + tc.name,
+				Status:            common.ChannelStatusEnabled,
+				Group:             "default",
+				Models:            "gpt-4o",
+				PriceSyncProtocol: string(service.UpstreamKindOpenAIModelsPricing),
+			}
+			require.NoError(t, db.Create(channel).Error)
+			if tc.existing != nil {
+				tc.existing.ChannelId = channel.Id
+				tc.existing.PoolGroup = "default"
+				tc.existing.ModelName = "gpt-4o"
+				tc.existing.Currency = "USD"
+				tc.existing.RateMultiplier = tc.existing.InputPrice / priceRatioBase
+				tc.existing.Status = model.QuoteStatusEnabled
+				require.NoError(t, db.Create(tc.existing).Error)
+			}
+
+			written, err := syncQuotesForChannel(channel, []channelQuoteDraft{
+				{ModelName: "gpt-4o", InputPrice: tc.input, OutputPrice: tc.output},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantWritten, written)
+
+			var quote model.ChannelQuote
+			require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?",
+				channel.Id, "default", "gpt-4o").First(&quote).Error)
+			assert.InDelta(t, tc.wantInput, quote.InputPrice, 1e-4)
+			assert.InDelta(t, tc.wantOutput, quote.OutputPrice, 1e-4)
+			assert.Equal(t, tc.wantSource, quote.Source)
+			assert.InDelta(t, tc.wantInput/priceRatioBase, quote.RateMultiplier, 1e-4)
+		})
+	}
+}
+
+func TestSyncQuotesForChannelProtocolIsolation(t *testing.T) {
+	db := newPriceSyncQuoteTestDB(t)
+	withPriceSyncMarketSetting(t, 6.6707, 1.06, 1.5, true)
+
+	standardChannel := &model.Channel{
+		Type:   constant.ChannelTypeNewAPI,
+		Key:    "sk-standard-protocol",
+		Name:   "standard-protocol",
+		Status: common.ChannelStatusEnabled,
+		Group:  "default",
+		Models: "gpt-4o",
+	}
+	require.NoError(t, db.Create(standardChannel).Error)
+	// 预设较高报价：标准协议渠道不应用风控折算与防打穿保护，直接按上游 1.0 倍率同步覆盖，不被放大 10.6 倍
+	require.NoError(t, db.Create(&model.ChannelQuote{
+		ChannelId: standardChannel.Id, PoolGroup: "default", ModelName: "gpt-4o",
+		RateMultiplier: 50, InputPrice: 100, OutputPrice: 200,
+		Currency: "USD", Source: model.QuoteSourceAuto, Status: model.QuoteStatusEnabled,
+	}).Error)
+
+	written, err := syncQuotesForChannel(standardChannel, []channelQuoteDraft{
+		{ModelName: "gpt-4o", InputPrice: 2.5, OutputPrice: 10},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, written)
+
+	var standardQuote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?",
+		standardChannel.Id, "default", "gpt-4o").First(&standardQuote).Error)
+	assert.InDelta(t, 2.5, standardQuote.InputPrice, 1e-4)
+	assert.InDelta(t, 10.0, standardQuote.OutputPrice, 1e-4)
+	assert.InDelta(t, 1.25, standardQuote.RateMultiplier, 1e-4)
+
+	pricingChannel := &model.Channel{
+		Type:              constant.ChannelTypeOpenAI,
+		Key:               "sk-openai-models-pricing",
+		Name:              "openai-models-pricing",
+		Status:            common.ChannelStatusEnabled,
+		Group:             "default",
+		Models:            "gpt-4o",
+		PriceSyncProtocol: string(service.UpstreamKindOpenAIModelsPricing),
+	}
+	require.NoError(t, db.Create(pricingChannel).Error)
+
+	written, err = syncQuotesForChannel(pricingChannel, []channelQuoteDraft{
+		{ModelName: "gpt-4o", InputPrice: 2.5, OutputPrice: 10},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, written)
+
+	var pricingQuote model.ChannelQuote
+	require.NoError(t, db.Where("channel_id = ? AND pool_group = ? AND model_name = ?",
+		pricingChannel.Id, "default", "gpt-4o").First(&pricingQuote).Error)
+	assert.InDelta(t, 26.516, pricingQuote.InputPrice, 1e-4)
+	assert.InDelta(t, 106.0641, pricingQuote.OutputPrice, 1e-4)
+}
+
+func TestMarketSettingOptionOverridesEnvDefault(t *testing.T) {
+	t.Setenv("PRICE_SYNC_FEE_MULTIPLIER", "9.99")
+	t.Setenv("PRICE_SYNC_MIN_PROFIT_MULT", "9.99")
+	t.Setenv("UPSTREAM_USD_CNY_RATE", "9.99")
+	t.Setenv("PRICE_SYNC_ENABLE_FLOOR_PROTECTION", "true")
+	saved := config.GlobalConfig.ExportAllConfigs()
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(saved)) })
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"market_setting.upstream_usd_cny_rate":   "7.1",
+		"market_setting.enable_floor_protection": "false",
+		"market_setting.fee_multiplier":          "1.2",
+		"market_setting.min_profit_mult":         "1.3",
+	}))
+
+	setting := operation_setting.GetMarketSetting()
+	assert.InDelta(t, 7.1, setting.UpstreamUSDCNYRate, 1e-9)
+	assert.False(t, setting.EnableFloorProtection)
+	assert.InDelta(t, 1.2, setting.FeeMultiplier, 1e-9)
+	assert.InDelta(t, 1.3, setting.MinProfitMult, 1e-9)
 }

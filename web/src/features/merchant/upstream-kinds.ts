@@ -24,6 +24,7 @@ export const UPSTREAM_KIND_AUTO = 'auto'
 /** 可以显式声明的上游网关类型。 */
 export const UPSTREAM_KIND_VALUES: UpstreamKind[] = [
   'newapi',
+  'openai_models_pricing',
   'sub2api',
   'openai',
 ]
@@ -36,6 +37,8 @@ export function upstreamKindLabelKey(kind: string | undefined): string {
   switch (kind) {
     case 'newapi':
       return 'New API'
+    case 'openai_models_pricing':
+      return 'OpenAI /v1/models pricing protocol'
     case 'sub2api':
       return 'Sub2API'
     case 'openai':

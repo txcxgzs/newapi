@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,6 +36,8 @@ const priceSyncMaxBodyBytes = 10 << 20
 const (
 	openRouterHost       = "openrouter.ai"
 	openRouterModelsPath = "/api/v1/models"
+	// OpenAI /v1/models 报价协议：带鉴权的 /v1/models 响应里附带 USD/1M-token 价格。
+	openAIModelsPricingPath = "/v1/models"
 )
 
 // channelQuoteDraft 同步折算后的一份模型报价草案。
@@ -55,26 +58,39 @@ type PriceSyncSummary struct {
 	SkippedDetails  []string `json:"skipped_details,omitempty"`
 }
 
-// errPriceUnsupported 表示上游不提供 New API 风格的价格接口（典型：Sub2API 等
+// errPriceUnsupported 表示上游不提供可自动同步的价格接口（典型：Sub2API 等
 // 只有 /v1/* 中继面的网关）。这类渠道不做自动同步，报价由商家/管理员手填。
-var errPriceUnsupported = errors.New("上游不提供 New API 风格价格接口，报价需手填")
+var errPriceUnsupported = errors.New("上游不提供可自动同步的价格接口，报价需手填")
 
 // fetchChannelQuoteDrafts 从渠道上游拉取价格并折算为 $/1M 报价草案。
-// 支持四类价格源：
+// 支持以下价格源：
 //   - New API 系 /api/pricing     → data 为 []Pricing（type2）
 //   - New API 系 /api/ratio_config → data 为 map（type1，含 model_ratio 等 key）
+//   - OpenAI /v1/models 报价协议   → 带 Bearer 鉴权，pricing 为 USD/1M-token
 //   - OpenRouter /api/v1/models   → 公开按 token 计价，复用 ratio_sync 的转换
 //   - models.dev /api.json        → 公开按 $/1M 计价，复用 ratio_sync 的转换
 //
 // 若上游只有中继面（典型是 Sub2API），两个 New API 端点都会 404/401，
 // 此时返回 errPriceUnsupported，让调用方优雅降级为"仅手填报价"而不是反复报错。
 func fetchChannelQuoteDrafts(ctx context.Context, channel *model.Channel) ([]channelQuoteDraft, error) {
-	return fetchQuoteDraftsByURL(ctx, strings.TrimRight(channel.GetBaseURL(), "/"))
+	return fetchQuoteDraftsByURL(ctx, strings.TrimRight(channel.GetBaseURL(), "/"),
+		priceSyncChannelKey(channel), channel.GetPriceSyncProtocol())
+}
+
+// priceSyncChannelKey 取渠道用于读取价格接口的密钥（多 Key 渠道取首个非空 Key）。
+func priceSyncChannelKey(channel *model.Channel) string {
+	for _, key := range channel.GetKeys() {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.TrimSpace(channel.Key)
 }
 
 // fetchQuoteDraftsByURL 按上游站址（而非渠道记录）拉取价格草案，
 // 供商家在填写入驻/扩容表单时自助检测「倍率自动获取」是否可用。
-func fetchQuoteDraftsByURL(ctx context.Context, baseURL string) ([]channelQuoteDraft, error) {
+// protocol 为空时按站址自动选择价格源；openai_models_pricing 时使用带鉴权的 /v1/models。
+func fetchQuoteDraftsByURL(ctx context.Context, baseURL string, apiKey string, protocol string) ([]channelQuoteDraft, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		return nil, fmt.Errorf("站址必须是 http/https")
@@ -92,6 +108,11 @@ func fetchQuoteDraftsByURL(ctx context.Context, baseURL string) ([]channelQuoteD
 		client.Timeout = priceSyncHTTPTimeout
 	}
 
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == string(service.UpstreamKindOpenAIModelsPricing) {
+		return fetchOpenAIModelsPricingQuoteDrafts(ctx, &client, baseURL, apiKey)
+	}
+
 	if host := upstreamHostname(baseURL); host == modelsDevHost || strings.HasSuffix(host, openRouterHost) {
 		return fetchPublicPricePreset(ctx, &client, baseURL, host)
 	}
@@ -106,7 +127,7 @@ func fetchQuoteDraftsByURL(ctx context.Context, baseURL string) ([]channelQuoteD
 			lastErr = fmt.Errorf("站址被网络获取策略拒绝（可在“系统设置 → 网络获取”放行该域名/网段）: %w", err)
 			continue
 		}
-		body, status, err := httpGetJSON(ctx, &client, target)
+		body, status, err := httpGetJSON(ctx, &client, target, "")
 		if err != nil {
 			lastErr = err
 			if isUnsupportedPriceStatus(status) {
@@ -131,6 +152,70 @@ func fetchQuoteDraftsByURL(ctx context.Context, baseURL string) ([]channelQuoteD
 	return nil, lastErr
 }
 
+// fetchOpenAIModelsPricingQuoteDrafts 用渠道密钥读取上游 /v1/models 价格表。
+func fetchOpenAIModelsPricingQuoteDrafts(ctx context.Context, client *http.Client, baseURL string, apiKey string) ([]channelQuoteDraft, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, fmt.Errorf("OpenAI /v1/models 报价协议上游缺少 API Key，无法读取 /v1/models 报价")
+	}
+	target := baseURL + openAIModelsPricingPath
+	if err := service.ValidateSSRFProtectedFetchURL(target); err != nil {
+		return nil, fmt.Errorf("站址被网络获取策略拒绝（可在“系统设置 → 网络获取”放行该域名/网段）: %w", err)
+	}
+	body, status, err := httpGetJSON(ctx, client, target, apiKey)
+	if err != nil {
+		// 401/403 是密钥问题而非"上游不支持"：保留为失败，避免定时任务
+		// 因临时密钥失效就永久关闭自动同步。
+		if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+			return nil, errPriceUnsupported
+		}
+		return nil, err
+	}
+	return parseOpenAIModelsPricingQuotes(body)
+}
+
+// parseOpenAIModelsPricingQuotes 解析 /v1/models 的内嵌定价：
+// data[].pricing.{currency,input_per_m,cached_input_per_m,output_per_m}，
+// 价格为 USD/1M-token，可直接作为盘口报价；缓存价当前盘口模型不区分，忽略。
+func parseOpenAIModelsPricingQuotes(body []byte) ([]channelQuoteDraft, error) {
+	var envelope struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Pricing *struct {
+				Currency   string   `json:"currency"`
+				InputPerM  *float64 `json:"input_per_m"`
+				OutputPerM *float64 `json:"output_per_m"`
+			} `json:"pricing"`
+		} `json:"data"`
+	}
+	if err := common.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("响应不是合法 JSON: %w", err)
+	}
+	drafts := make([]channelQuoteDraft, 0, len(envelope.Data))
+	for _, item := range envelope.Data {
+		modelName := strings.TrimSpace(item.ID)
+		pricing := item.Pricing
+		if modelName == "" || pricing == nil || pricing.InputPerM == nil || pricing.OutputPerM == nil {
+			continue
+		}
+		currency := strings.TrimSpace(pricing.Currency)
+		if currency != "" && !strings.EqualFold(currency, "USD") {
+			continue
+		}
+		if *pricing.InputPerM <= 0 || *pricing.OutputPerM <= 0 {
+			continue
+		}
+		drafts = append(drafts, channelQuoteDraft{
+			ModelName:   modelName,
+			InputPrice:  *pricing.InputPerM,
+			OutputPrice: *pricing.OutputPerM,
+		})
+	}
+	if len(drafts) == 0 {
+		return nil, errPriceUnsupported
+	}
+	return drafts, nil
+}
+
 // upstreamHostname 取 base_url 的主机名（小写），解析失败返回空串。
 func upstreamHostname(baseURL string) string {
 	parsed, err := url.Parse(baseURL)
@@ -152,7 +237,7 @@ func fetchPublicPricePreset(ctx context.Context, client *http.Client, baseURL st
 	if err := service.ValidateSSRFProtectedFetchURL(target); err != nil {
 		return nil, err
 	}
-	body, _, err := httpGetJSON(ctx, client, target)
+	body, _, err := httpGetJSON(ctx, client, target, "")
 	if err != nil {
 		return nil, err
 	}
@@ -191,14 +276,18 @@ func isUnsupportedPriceStatus(status int) bool {
 }
 
 // httpGetJSON 带退避重试的 GET，返回响应体与状态码（状态码在错误时也带回，
-// 便于上层区分"上游没有这个接口"与"网络/上游故障"）。
-func httpGetJSON(ctx context.Context, client *http.Client, url string) ([]byte, int, error) {
+// 便于上层区分"上游没有这个接口"与"网络/上游故障"）。apiKey 非空时按
+// Bearer 发送，供 OpenAI /v1/models 报价协议鉴权。
+func httpGetJSON(ctx context.Context, client *http.Client, url string, apiKey string) ([]byte, int, error) {
 	var lastErr error
 	lastStatus := 0
 	for attempt := range 3 {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, 0, err
+		}
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -319,8 +408,15 @@ func draftsFromRatioMaps(data map[string]any) []channelQuoteDraft {
 	return drafts
 }
 
+// roundQuotePrice 统一盘口单价精度（USD/1M，保留 4 位小数），
+// 避免成本折算后的浮点尾差写入数据库。
+func roundQuotePrice(value float64) float64 {
+	return math.Round(value*10000) / 10000
+}
+
 // syncQuotesForChannel 把报价草案落到盘口：与渠道声明的模型取交集，
-// 每个所属号池各写一行；商家手填的报价（source=manual）不会被覆盖。
+// 每个所属号池各写一行。最低安全售价保护开启时，仅在上游涨破安全线
+// 才上调价格；关闭时直接按最低安全售价覆盖。
 func syncQuotesForChannel(channel *model.Channel, drafts []channelQuoteDraft) (int, error) {
 	served := make(map[string]bool)
 	for _, m := range strings.Split(channel.Models, ",") {
@@ -356,17 +452,24 @@ func syncQuotesForChannel(channel *model.Channel, drafts []channelQuoteDraft) (i
 		pools = []string{"default"}
 	}
 
-	// 手填报价保护：管理员手工锁定（source=manual）的 (pool, model) 不被自动同步覆盖。
-	// derived 行（平台标准倍率 × 渠道倍率）只是上游价格缺失时的兜底：
-	// 自动探测到的上游真实报价优先级更高，必须能覆盖 derived，
-	// 否则派生盘口铺满全部模型后，定时同步永远写不进数据，"自动获取倍率"形同虚设。
-	protected := make(map[string]bool)
-	for _, pool := range pools {
-		var rows []model.ChannelQuote
-		if err := model.DB.Where("channel_id = ? AND pool_group = ? AND source = ?",
-			channel.Id, pool, model.QuoteSourceManual).Find(&rows).Error; err == nil {
-			for _, r := range rows {
-				protected[pool+"|"+r.ModelName] = true
+	// 当前盘口：最低安全售价保护仅针对 OpenAI /v1/models 报价协议生效，
+	// 需要拿「已设定的对外售价」做比较，未涨价时保留原价（含管理员手填价），
+	// 涨破安全线才自动上调。非该协议渠道保持原有 1.0 倍率直接同步语义。
+	setting := operation_setting.GetMarketSetting()
+	isOpenAIModelsPricing := strings.EqualFold(
+		channel.GetPriceSyncProtocol(),
+		string(service.UpstreamKindOpenAIModelsPricing),
+	)
+	costMult := 1.0
+	if isOpenAIModelsPricing {
+		costMult = setting.UpstreamUSDCNYRate * setting.FeeMultiplier * setting.MinProfitMult
+	}
+	existing := make(map[string]model.ChannelQuote)
+	if isOpenAIModelsPricing {
+		var existingRows []model.ChannelQuote
+		if err := model.DB.Where("channel_id = ?", channel.Id).Find(&existingRows).Error; err == nil {
+			for _, row := range existingRows {
+				existing[row.PoolGroup+"|"+row.ModelName] = row
 			}
 		}
 	}
@@ -375,22 +478,35 @@ func syncQuotesForChannel(channel *model.Channel, drafts []channelQuoteDraft) (i
 	// 根本不是本渠道服务范围的模型铺满"幽灵盘口"。与 RebuildChannelQuotesWithTx
 	// 的语义保持一致——没有模型即没有可挂的盘口，走下方清理分支清干净。
 	quotes := make([]model.ChannelQuote, 0, len(drafts)*len(pools))
+	kept := make(map[string]bool)
 	for _, draft := range drafts {
 		if !served[draft.ModelName] {
 			continue
 		}
+		minInput := roundQuotePrice(draft.InputPrice * costMult)
+		minOutput := roundQuotePrice(draft.OutputPrice * costMult)
 		for _, pool := range pools {
-			if protected[pool+"|"+draft.ModelName] {
-				continue
+			key := pool + "|" + draft.ModelName
+			current, hasCurrent := existing[key]
+			targetInput, targetOutput := minInput, minOutput
+			if isOpenAIModelsPricing && setting.EnableFloorProtection && hasCurrent {
+				targetInput = max(current.InputPrice, minInput)
+				targetOutput = max(current.OutputPrice, minOutput)
+				// 上游没有涨破安全线：保留当前对外售价（尤其是手填宣传价），
+				// 不产生写操作，也不改变报价来源。
+				if targetInput <= current.InputPrice && targetOutput <= current.OutputPrice {
+					kept[key] = true
+					continue
+				}
 			}
 			quotes = append(quotes, model.ChannelQuote{
 				ChannelId: channel.Id,
 				PoolGroup: pool,
 				ModelName: draft.ModelName,
-				// 上游拉到的单价反推出有效倍率，供行情与比价统一按倍率口径展示
-				RateMultiplier: draft.InputPrice / priceRatioBase,
-				InputPrice:     draft.InputPrice,
-				OutputPrice:    draft.OutputPrice,
+				// 落库单价反推出有效倍率，供行情与比价统一按倍率口径展示
+				RateMultiplier: targetInput / priceRatioBase,
+				InputPrice:     targetInput,
+				OutputPrice:    targetOutput,
 				Currency:       "USD",
 				Source:         model.QuoteSourceAuto,
 				Status:         model.QuoteStatusEnabled,
@@ -428,12 +544,12 @@ func syncQuotesForChannel(channel *model.Channel, drafts []channelQuoteDraft) (i
 		return 0, err
 	}
 	// 清理本轮上游未再报价 / 已下架模型残留的 auto 行，防止幽灵盘口；
-	// 受 manual 保护的行虽未重写，仍属渠道在售范围，一并加入白名单
-	written := make(map[string]bool, len(quotes)+len(protected))
+	// 因未涨破安全线而保留的行虽未重写，仍属渠道在售范围，一并加入白名单。
+	written := make(map[string]bool, len(quotes)+len(kept))
 	for _, q := range quotes {
 		written[q.PoolGroup+"|"+q.ModelName] = true
 	}
-	for key := range protected {
+	for key := range kept {
 		written[key] = true
 	}
 	if err := model.CleanupStaleAutoQuotes(model.DB, channel.Id, written); err != nil {

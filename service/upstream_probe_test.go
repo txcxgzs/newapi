@@ -29,6 +29,29 @@ func withProbeTestClient(t *testing.T) {
 }
 
 // newProbeServer 模拟不同网关：newAPIPricing=true 时暴露 New API 风格价格接口。
+// newOpenAIModelsPricingProbeServer 模拟 OpenAI /v1/models 报价协议上游：
+// /v1/models 带鉴权并内嵌 USD/1M 价格。
+func newOpenAIModelsPricingProbeServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			if r.Header.Get("Authorization") != "Bearer sk-merchant" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[
+				{"id":"gpt-4o","pricing":{"currency":"USD","input_per_m":2.5,"cached_input_per_m":1.25,"output_per_m":10}},
+				{"id":"claude-opus-5","pricing":{"currency":"USD","input_per_m":5,"output_per_m":20}}
+			]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
 func newProbeServer(t *testing.T, newAPIPricing bool, statusBody string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +94,48 @@ func TestProbeUpstreamNewAPIPricingEnablesAutoSync(t *testing.T) {
 	assert.Equal(t, constant.ChannelTypeNewAPI, probe.ChannelType)
 	assert.True(t, probe.NewAPIPricing)
 	assert.True(t, probe.PriceSyncCapable)
+	assert.Equal(t, string(UpstreamKindNewAPI), probe.PriceSyncProtocol)
 	assert.True(t, probe.ModelsEndpointOK)
 	assert.Equal(t, 2, probe.ModelCount)
+}
+
+func TestProbeUpstreamAutoDoesNotGuessModelsPricingProtocol(t *testing.T) {
+	withProbeTestClient(t)
+	server := newOpenAIModelsPricingProbeServer(t)
+
+	probe := ProbeUpstream(context.Background(), server.URL, "sk-merchant", UpstreamKindAuto)
+
+	assert.Equal(t, UpstreamKindOpenAICompatible, probe.Kind)
+	assert.Equal(t, constant.ChannelTypeOpenAI, probe.ChannelType)
+	assert.False(t, probe.PriceSyncCapable)
+	assert.Empty(t, probe.PriceSyncProtocol)
+	assert.Equal(t, []string{"gpt-4o", "claude-opus-5"}, probe.Models)
+}
+
+func TestProbeUpstreamDeclaredModelsPricingEnablesSync(t *testing.T) {
+	withProbeTestClient(t)
+	server := newOpenAIModelsPricingProbeServer(t)
+
+	probe := ProbeUpstream(context.Background(), server.URL, "sk-merchant", UpstreamKindOpenAIModelsPricing)
+
+	assert.Equal(t, UpstreamKindOpenAIModelsPricing, probe.Kind)
+	assert.Equal(t, constant.ChannelTypeOpenAI, probe.ChannelType)
+	assert.True(t, probe.PriceSyncCapable)
+	assert.Equal(t, string(UpstreamKindOpenAIModelsPricing), probe.PriceSyncProtocol)
+	assert.Equal(t, []string{"gpt-4o", "claude-opus-5"}, probe.Models)
+	assert.Empty(t, probe.Warnings)
+}
+
+func TestProbeUpstreamDeclaredModelsPricingWithoutPricingWarns(t *testing.T) {
+	withProbeTestClient(t)
+	server := newProbeServer(t, false, "")
+
+	probe := ProbeUpstream(context.Background(), server.URL, "sk-merchant", UpstreamKindOpenAIModelsPricing)
+
+	assert.Equal(t, UpstreamKindOpenAIModelsPricing, probe.Kind)
+	assert.True(t, probe.PriceSyncCapable)
+	assert.Equal(t, string(UpstreamKindOpenAIModelsPricing), probe.PriceSyncProtocol)
+	assert.Contains(t, strings.Join(probe.Warnings, " "), "pricing")
 }
 
 func TestProbeUpstreamSub2APIStyleGatewayKeepsManualQuotes(t *testing.T) {
@@ -134,10 +197,12 @@ func TestProbeUpstreamRejectsPrivateTarget(t *testing.T) {
 func TestUpstreamKindMapping(t *testing.T) {
 	assert.Equal(t, constant.ChannelTypeNewAPI, UpstreamChannelType(UpstreamKindNewAPI))
 	assert.Equal(t, constant.ChannelTypeSub2API, UpstreamChannelType(UpstreamKindSub2API))
+	assert.Equal(t, constant.ChannelTypeOpenAI, UpstreamChannelType(UpstreamKindOpenAIModelsPricing))
 	assert.Equal(t, constant.ChannelTypeOpenAI, UpstreamChannelType(UpstreamKindOpenAICompatible))
 	assert.Equal(t, constant.ChannelTypeOpenAI, UpstreamChannelType(UpstreamKindAuto))
 
 	assert.Equal(t, UpstreamKindSub2API, ParseUpstreamKind(" Sub2API "))
 	assert.Equal(t, UpstreamKindOpenAICompatible, ParseUpstreamKind("openai-compatible"))
+	assert.Equal(t, UpstreamKindOpenAIModelsPricing, ParseUpstreamKind("openai_models_pricing"))
 	assert.Equal(t, UpstreamKindAuto, ParseUpstreamKind("unknown-gateway"))
 }

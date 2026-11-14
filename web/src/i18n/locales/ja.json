@@ -4008,7 +4008,7 @@
     "New API &lt;noreply@example.com&gt;": "新しいAPI __ PH_0 __",
     "New API Project Repository:": "New APIプロジェクトリポジトリ:",
     "New API pricing API": "New API pricing API",
-    "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "New API 系アップストリームは公開の価格APIを提供しており、倍率は自動同期されます。Sub2API および OpenAI 互換アップストリームには価格APIがなく、プラットフォーム標準価格で掲載されます。",
+    "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "New API および OpenAI /v1/models pricing protocol アップストリームは価格 API を提供するため、倍率は自動同期されます。Sub2API および OpenAI 互換アップストリームには価格 API がなく、プラットフォーム標準価格で掲載されます。",
     "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently": "New API の柔軟な接続チャネルでは、エンドポイントごとに上流アドレスと認証方式を設定し、ネイティブ転送または対応するプロトコル変換を選択できます。モデル一覧と残高照会も個別に設定できます",
     "New Format Template": "新フォーマットテンプレート",
     "New Group": "新しいグループ",
@@ -8074,6 +8074,17 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 Your Company. 全著作権所有。",
     "、": "、",
     "，": "、",
-    "，and ": "、"
+    "，and ": "、",
+    "Price Sync & Risk Control": "価格同期とリスク制御",
+    "Enable floor protection": "最低安全価格の保護を有効にする",
+    "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.": "上流コストが最低安全価格を超えるまで現在の掲載価格を維持し、超えた場合は自動的に引き上げます。",
+    "Upstream purchase USD/CNY rate": "上流仕入れの USD/CNY レート",
+    "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.": "上流の USD コストをプラットフォームの請求通貨に換算するレートです。フロントエンドのチャージ用 USD レートとは独立しています。",
+    "Fee multiplier": "手数料倍率",
+    "Multiplier applied to the upstream cost to cover payment and channel fees.": "支払い・チャネル手数料をカバーするために上流コストに適用する倍率です。",
+    "Minimum profit multiplier": "最低利益倍率",
+    "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.": "手数料込みコストに適用する最低利益倍率で、最低安全価格を算出します。",
+    "Floor protection is off: every sync overwrites the listed price with the minimum safe price.": "最低安全価格の保護が無効です。同期のたびに掲載価格が最低安全価格で上書きされます。",
+    "Save price sync settings": "価格同期設定を保存"
   }
 }

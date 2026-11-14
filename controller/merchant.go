@@ -220,25 +220,27 @@ func ProbeMerchantApplyUpstream(c *gin.Context) {
 func probeUpstreamWithPrices(ctx context.Context, siteUrl string, siteKey string, declared service.UpstreamKind) gin.H {
 	probe := service.ProbeUpstream(ctx, siteUrl, siteKey, declared)
 	result := gin.H{
-		"probe":              probe,
-		"kind":               probe.Kind,
-		"price_sync_capable": probe.PriceSyncCapable,
-		"models_endpoint_ok": probe.ModelsEndpointOK,
-		"model_count":        probe.ModelCount,
-		"warnings":           probe.Warnings,
+		"probe":               probe,
+		"kind":                probe.Kind,
+		"price_sync_capable":  probe.PriceSyncCapable,
+		"price_sync_protocol": probe.PriceSyncProtocol,
+		"models_endpoint_ok":  probe.ModelsEndpointOK,
+		"model_count":         probe.ModelCount,
+		"warnings":            probe.Warnings,
 	}
 	if len(probe.Models) > 0 {
 		// 上游模型清单：前端用于「上游模型名 ↔ 平台官方模型名」的对接编辑器
 		result["models"] = probe.Models
 	}
-	// 商家显式声明 Sub2API / OpenAI 兼容时不再实测抓价：
-	// 这两类网关没有 New API 风格价格接口，抓取结果必然为空。
-	if declared == service.UpstreamKindSub2API || declared == service.UpstreamKindOpenAICompatible {
+	// 商家显式声明 Sub2API / OpenAI 兼容且探测不到价格接口时不再实测抓价。
+	// 若显式选择 OpenAI /v1/models 报价协议，协议非空，仍需带密钥实测。
+	if probe.PriceSyncProtocol == "" &&
+		(declared == service.UpstreamKindSub2API || declared == service.UpstreamKindOpenAICompatible) {
 		result["price_fetch_ok"] = false
 		result["price_fetch_message"] = "该上游类型不提供价格接口，报价将按平台标准价挂牌"
 		return result
 	}
-	drafts, err := fetchQuoteDraftsByURL(ctx, siteUrl)
+	drafts, err := fetchQuoteDraftsByURL(ctx, siteUrl, siteKey, probe.PriceSyncProtocol)
 	if err != nil || len(drafts) == 0 {
 		result["price_fetch_ok"] = false
 		if err != nil && !errors.Is(err, errPriceUnsupported) {
@@ -280,9 +282,12 @@ func probeUpstreamWithPrices(ctx context.Context, siteUrl string, siteKey string
 	return result
 }
 
-// upstreamKindFromChannelType 把渠道类型编号映射回上游类型（探测时的声明口径）。
-func upstreamKindFromChannelType(channelType int) service.UpstreamKind {
-	switch channelType {
+// upstreamKindFromChannel 把渠道类型与已保存的同步协议映射回探测声明口径。
+func upstreamKindFromChannel(channel *model.Channel) service.UpstreamKind {
+	if channel.GetPriceSyncProtocol() == string(service.UpstreamKindOpenAIModelsPricing) {
+		return service.UpstreamKindOpenAIModelsPricing
+	}
+	switch channel.Type {
 	case constant.ChannelTypeNewAPI:
 		return service.UpstreamKindNewAPI
 	case constant.ChannelTypeSub2API:
@@ -361,7 +366,7 @@ func ProbeMerchantChannel(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
 	defer cancel()
-	common.ApiSuccess(c, probeUpstreamWithPrices(ctx, siteUrl, siteKey, upstreamKindFromChannelType(channel.Type)))
+	common.ApiSuccess(c, probeUpstreamWithPrices(ctx, siteUrl, siteKey, upstreamKindFromChannel(channel)))
 }
 
 // UpdateMerchantChannel 商家编辑自己的渠道：站点名称、站址、密钥、模型对接。
@@ -435,7 +440,7 @@ func UpdateMerchantChannel(c *gin.Context) {
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
 		defer cancel()
-		probe := service.ProbeUpstream(ctx, probeURL, probeKey, upstreamKindFromChannelType(channel.Type))
+		probe := service.ProbeUpstream(ctx, probeURL, probeKey, upstreamKindFromChannel(channel))
 		if !probe.ModelsEndpointOK {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
@@ -1405,8 +1410,11 @@ func ReviewMerchantApplication(c *gin.Context) {
 				logger.LogWarn(c.Request.Context(), "merchant review: marshal model mapping failed: "+mapErr.Error())
 			}
 		}
-		// 只有具备 New API 风格价格接口的上游才默认开启自动报价同步。
-		priceSyncEnabled = probe.PriceSyncCapable && channelType == constant.ChannelTypeNewAPI
+		// 只有具备可自动读取价格接口的上游才默认开启自动报价同步：
+		// New API 需落到 New API 渠道类型，OpenAI /v1/models 报价协议走 OpenAI 兼容中继。
+		priceSyncEnabled = probe.PriceSyncCapable &&
+			(channelType == constant.ChannelTypeNewAPI ||
+				probe.PriceSyncProtocol == string(service.UpstreamKindOpenAIModelsPricing))
 		if req.PriceSync != nil {
 			priceSyncEnabled = *req.PriceSync
 		}
@@ -1441,21 +1449,22 @@ func ReviewMerchantApplication(c *gin.Context) {
 		priceSync := priceSyncEnabled
 		autoRouting := true
 		channel := &model.Channel{
-			Type:           channelType,
-			Key:            app.SiteKey,
-			Name:           "商家:" + app.SiteName,
-			Status:         common.ChannelStatusEnabled,
-			CreatedTime:    time.Now().Unix(),
-			BaseURL:        &app.SiteUrl,
-			Models:         strings.Join(models, ","),
-			Group:          strings.Join(req.Pools, ","),
-			MerchantId:     app.UserId,
-			PriceSync:      &priceSync,
-			AutoRouting:    &autoRouting,
-			RateMultiplier: rateMultiplier,
-			Priority:       req.Priority,
-			Weight:         req.Weight,
-			ModelMapping:   modelMappingJSON,
+			Type:              channelType,
+			Key:               app.SiteKey,
+			Name:              "商家:" + app.SiteName,
+			Status:            common.ChannelStatusEnabled,
+			CreatedTime:       time.Now().Unix(),
+			BaseURL:           &app.SiteUrl,
+			Models:            strings.Join(models, ","),
+			Group:             strings.Join(req.Pools, ","),
+			MerchantId:        app.UserId,
+			PriceSync:         &priceSync,
+			PriceSyncProtocol: probe.PriceSyncProtocol,
+			AutoRouting:       &autoRouting,
+			RateMultiplier:    rateMultiplier,
+			Priority:          req.Priority,
+			Weight:            req.Weight,
+			ModelMapping:      modelMappingJSON,
 		}
 		if err := channel.InsertWithTx(tx); err != nil {
 			return fmt.Errorf("创建渠道失败: %w", err)

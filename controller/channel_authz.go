@@ -142,8 +142,9 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"channel_info":        {},
 	"multi_key_mode":      {},
 	// New API Pro：智能路由与报价同步开关（路由类，管理员可编辑）
-	"auto_routing": {},
-	"price_sync":   {},
+	"auto_routing":        {},
+	"price_sync":          {},
+	"price_sync_protocol": {},
 	// New API Pro：商家渠道倍率（定价类，商家可自助调整，非敏感）
 	"rate_multiplier": {},
 	// 赠金渠道开关（计费来源类，管理员可编辑，非敏感）

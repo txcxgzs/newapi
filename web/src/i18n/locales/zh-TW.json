@@ -4008,7 +4008,7 @@
     "New API &lt;noreply@example.com&gt;": "New API &lt;noreply@example.com&gt;",
     "New API Project Repository:": "New API 項目倉庫：",
     "New API pricing API": "New API 價格介面",
-    "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "New API 系上游提供公開的價格介面，倍率可自動同步；Sub2API 與 OpenAI 相容上游沒有價格介面，將按平台標準價掛牌。",
+    "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "New API 與 OpenAI /v1/models 報價協議上游提供價格介面，倍率可自動同步；Sub2API 與 OpenAI 相容上游沒有價格介面，將按平台標準價掛牌。",
     "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently": "New API 的靈活接入渠道，可依介面設定上游位址與驗證方式，選擇原生轉發或專案支援的協定轉換，並獨立設定模型清單和餘額查詢",
     "New Format Template": "新格式模板",
     "New Group": "新建分組",
@@ -8074,6 +8074,17 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 您的公司。保留所有權利。",
     "、": "、",
     "，": "，",
-    "，and ": "，並"
+    "，and ": "，並",
+    "Price Sync & Risk Control": "價格同步與風險控制",
+    "Enable floor protection": "啟用最低安全售價保護",
+    "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.": "上游成本未漲破最低安全售價時保留目前掛牌價；漲破後自動上調。",
+    "Upstream purchase USD/CNY rate": "上游進貨美元兌人民幣匯率",
+    "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.": "用於把上游美元成本折算為平台計費幣種的匯率，與前台儲值美元匯率完全獨立。",
+    "Fee multiplier": "費率倍數",
+    "Multiplier applied to the upstream cost to cover payment and channel fees.": "在上游成本上疊加的支付/通道費率倍數。",
+    "Minimum profit multiplier": "最低利潤倍數",
+    "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.": "在含費成本上疊加的最低利潤倍數，用於計算最低安全售價。",
+    "Floor protection is off: every sync overwrites the listed price with the minimum safe price.": "最低安全售價保護已關閉：每輪同步都會用最低安全售價覆蓋掛牌價。",
+    "Save price sync settings": "儲存價格同步設定"
   }
 }

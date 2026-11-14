@@ -23,6 +23,10 @@ const (
 	UpstreamKindNewAPI           UpstreamKind = "newapi"
 	UpstreamKindSub2API          UpstreamKind = "sub2api"
 	UpstreamKindOpenAICompatible UpstreamKind = "openai"
+	// UpstreamKindOpenAIModelsPricing 中继仍按 OpenAI 兼容处理，但价格通过带
+	// Bearer 鉴权的 /v1/models 返回（USD/1M-token）。该协议只由管理员/商家
+	// 显式选择启用，不根据站址或响应内容自动猜测。
+	UpstreamKindOpenAIModelsPricing UpstreamKind = "openai_models_pricing"
 )
 
 // UpstreamChannelType 把上游类型映射为渠道类型编号。
@@ -46,6 +50,8 @@ func ParseUpstreamKind(raw string) UpstreamKind {
 		return UpstreamKindSub2API
 	case UpstreamKindOpenAICompatible, "openai-compatible":
 		return UpstreamKindOpenAICompatible
+	case UpstreamKindOpenAIModelsPricing:
+		return UpstreamKindOpenAIModelsPricing
 	default:
 		return UpstreamKindAuto
 	}
@@ -61,12 +67,23 @@ type UpstreamProbe struct {
 	Models           []string     `json:"models,omitempty"`
 	ModelCount       int          `json:"model_count"`
 	PriceSyncCapable bool         `json:"price_sync_capable"`
-	Warnings         []string     `json:"warnings,omitempty"`
+	// PriceSyncProtocol 可用于报价同步的协议（newapi / openai_models_pricing），空表示不可同步。
+	PriceSyncProtocol string   `json:"price_sync_protocol,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
 }
 
 const upstreamProbeTimeout = 8 * time.Second
 const upstreamProbeMaxBody = 2 << 20
 const upstreamProbeModelLimit = 500
+
+// upstreamModelsProbe 汇总 /v1/models 探测结果：模型清单与内嵌价格能力。
+type upstreamModelsProbe struct {
+	models           []string
+	status           int
+	ok               bool
+	err              error
+	hasModelsPricing bool
+}
 
 // ProbeUpstream 探测上游网关：验证可达性、密钥可用性、模型清单与价格接口能力。
 // declared 为申请单声明的类型，用于消歧（自动模式下不依赖启发式猜测成 Sub2API）。
@@ -87,39 +104,57 @@ func ProbeUpstream(ctx context.Context, baseURL string, apiKey string, declared 
 		return probe
 	}
 
-	// 1) New API 系公开价格接口（无鉴权）
-	probe.NewAPIPricing = probeNewAPIPricing(ctx, baseURL, &probe.Warnings)
+	// 1) New API 系公开价格接口（无鉴权）。OpenAI /v1/models 报价协议下该接口
+	// 无关，跳过探测避免向商家展示误导性的“未发现价格接口”告警。
+	if declared != UpstreamKindOpenAIModelsPricing {
+		probe.NewAPIPricing = probeNewAPIPricing(ctx, baseURL, &probe.Warnings)
+	}
 
-	// 2) OpenAI 兼容模型清单（带商家密钥）
+	// 2) OpenAI 兼容模型清单（带商家密钥；部分上游会附带 pricing）
+	modelsProbe := upstreamModelsProbe{}
 	if strings.TrimSpace(apiKey) != "" {
-		models, status, ok, err := probeModelsEndpoint(ctx, baseURL, apiKey)
-		probe.ModelsEndpointOK = ok
+		modelsProbe = probeModelsEndpoint(ctx, baseURL, apiKey)
+		probe.ModelsEndpointOK = modelsProbe.ok
 		switch {
-		case ok:
-			probe.Models = models
-			probe.ModelCount = len(models)
-		case err != nil:
-			probe.Warnings = append(probe.Warnings, "/v1/models 探测失败: "+err.Error())
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			probe.Warnings = append(probe.Warnings, "/v1/models 拒绝该密钥（HTTP "+strconv.Itoa(status)+"），渠道可能不可用")
+		case modelsProbe.ok:
+			probe.Models = modelsProbe.models
+			probe.ModelCount = len(modelsProbe.models)
+		case modelsProbe.err != nil:
+			probe.Warnings = append(probe.Warnings, "/v1/models 探测失败: "+modelsProbe.err.Error())
+		case modelsProbe.status == http.StatusUnauthorized || modelsProbe.status == http.StatusForbidden:
+			probe.Warnings = append(probe.Warnings, "/v1/models 拒绝该密钥（HTTP "+strconv.Itoa(modelsProbe.status)+"），渠道可能不可用")
 		default:
 			probe.Warnings = append(probe.Warnings,
-				"/v1/models 不可用（HTTP "+strconv.Itoa(status)+"），无法自动补全模型清单")
+				"/v1/models 不可用（HTTP "+strconv.Itoa(modelsProbe.status)+"），无法自动补全模型清单")
 		}
 	} else {
 		probe.Warnings = append(probe.Warnings, "未提供密钥，跳过 /v1/models 校验")
 	}
 
-	// 3) Sub2API 自报信号（仅在未声明类型时参与判定）
-	if declared == UpstreamKindAuto && !probe.NewAPIPricing && probeLooksLikeSub2API(ctx, baseURL) {
-		probe.Kind = UpstreamKindSub2API
+	// 3) 自动模式：只识别 New API 公开价格接口与 Sub2API 弱信号。
+	// OpenAI /v1/models 报价协议必须由管理员/商家显式选择，避免仅凭响应里
+	// 出现 pricing 字段就误判上游类型。
+	if declared == UpstreamKindAuto && probe.Kind == UpstreamKindAuto {
+		if probeLooksLikeSub2API(ctx, baseURL) && !probe.NewAPIPricing {
+			probe.Kind = UpstreamKindSub2API
+		}
 	}
 
 	probe.Kind = normalizeProbeKind(probe)
 	probe.ChannelType = UpstreamChannelType(probe.Kind)
-	probe.PriceSyncCapable = probe.NewAPIPricing
-	if !probe.NewAPIPricing {
-		probe.Warnings = append(probe.Warnings, "上游不提供 New API 风格价格接口，报价需手填")
+	switch {
+	case declared == UpstreamKindOpenAIModelsPricing:
+		probe.PriceSyncProtocol = string(UpstreamKindOpenAIModelsPricing)
+	case probe.NewAPIPricing:
+		probe.PriceSyncProtocol = string(UpstreamKindNewAPI)
+	}
+	probe.PriceSyncCapable = probe.PriceSyncProtocol != ""
+	if !probe.PriceSyncCapable {
+		probe.Warnings = append(probe.Warnings, "上游不提供可自动同步的价格接口，报价需手填")
+	} else if probe.PriceSyncProtocol == string(UpstreamKindOpenAIModelsPricing) &&
+		!modelsProbe.hasModelsPricing {
+		probe.Warnings = append(probe.Warnings,
+			"未在 /v1/models 响应中发现 pricing 字段，报价同步可能失败")
 	}
 	return probe
 }
@@ -158,28 +193,45 @@ func probeNewAPIPricing(ctx context.Context, baseURL string, warnings *[]string)
 	return false
 }
 
-// probeModelsEndpoint 用商家密钥读取 OpenAI 兼容模型清单。
-func probeModelsEndpoint(ctx context.Context, baseURL string, apiKey string) ([]string, int, bool, error) {
+// probeModelsEndpoint 用商家密钥读取 OpenAI 兼容模型清单，并识别内嵌的
+// USD/1M-token pricing 字段（仅用于已显式选择该协议时的告警判断）。
+func probeModelsEndpoint(ctx context.Context, baseURL string, apiKey string) upstreamModelsProbe {
+	result := upstreamModelsProbe{}
 	body, status, err := probeGet(ctx, baseURL+"/v1/models", apiKey)
+	result.status = status
 	if err != nil {
-		return nil, status, false, err
+		result.err = err
+		return result
 	}
 	if status != http.StatusOK {
-		return nil, status, false, nil
+		return result
 	}
 	var resp struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID      string `json:"id"`
+			Pricing *struct {
+				Currency   string   `json:"currency"`
+				InputPerM  *float64 `json:"input_per_m"`
+				OutputPerM *float64 `json:"output_per_m"`
+			} `json:"pricing"`
 		} `json:"data"`
 	}
 	if err := common.Unmarshal(body, &resp); err != nil {
-		return nil, status, false, err
+		result.err = err
+		return result
 	}
 	if len(resp.Data) == 0 {
-		return nil, status, false, nil
+		return result
 	}
 	models := make([]string, 0, len(resp.Data))
 	for _, item := range resp.Data {
+		if pricing := item.Pricing; pricing != nil &&
+			pricing.InputPerM != nil && pricing.OutputPerM != nil {
+			currency := strings.TrimSpace(pricing.Currency)
+			if currency == "" || strings.EqualFold(currency, "USD") {
+				result.hasModelsPricing = true
+			}
+		}
 		if id := strings.TrimSpace(item.ID); id != "" {
 			models = append(models, id)
 			if len(models) >= upstreamProbeModelLimit {
@@ -187,7 +239,9 @@ func probeModelsEndpoint(ctx context.Context, baseURL string, apiKey string) ([]
 			}
 		}
 	}
-	return models, status, len(models) > 0, nil
+	result.models = models
+	result.ok = len(models) > 0
+	return result
 }
 
 // probeLooksLikeSub2API 读取 /api/status 作为 Sub2API 的弱信号。

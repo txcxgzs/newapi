@@ -4008,7 +4008,7 @@
     "New API &lt;noreply@example.com&gt;": "New API &lt;noreply@example.com&gt;",
     "New API Project Repository:": "New API Project Repository:",
     "New API pricing API": "New API pricing API",
-    "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.",
+    "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.",
     "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently": "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently",
     "New Format Template": "New Format Template",
     "New Group": "New Group",
@@ -8074,6 +8074,17 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 Your Company. All rights reserved.",
     "、": ", ",
     "，": ", ",
-    "，and ": ", and "
+    "，and ": ", and ",
+    "Price Sync & Risk Control": "Price Sync & Risk Control",
+    "Enable floor protection": "Enable floor protection",
+    "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.": "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.",
+    "Upstream purchase USD/CNY rate": "Upstream purchase USD/CNY rate",
+    "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.": "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.",
+    "Fee multiplier": "Fee multiplier",
+    "Multiplier applied to the upstream cost to cover payment and channel fees.": "Multiplier applied to the upstream cost to cover payment and channel fees.",
+    "Minimum profit multiplier": "Minimum profit multiplier",
+    "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.": "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.",
+    "Floor protection is off: every sync overwrites the listed price with the minimum safe price.": "Floor protection is off: every sync overwrites the listed price with the minimum safe price.",
+    "Save price sync settings": "Save price sync settings"
   }
 }

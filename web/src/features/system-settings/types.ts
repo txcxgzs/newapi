@@ -398,6 +398,10 @@ export type OperationsSettings = {
   'perf_metrics_setting.flush_interval': number
   'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
   'perf_metrics_setting.retention_days': number
+  'market_setting.enable_floor_protection': boolean
+  'market_setting.upstream_usd_cny_rate': number
+  'market_setting.fee_multiplier': number
+  'market_setting.min_profit_mult': number
 }
 
 export type SecuritySettings = {

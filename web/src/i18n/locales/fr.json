@@ -4008,7 +4008,7 @@
     "New API &lt;noreply@example.com&gt;": "New API &lt;noreply@example.com&gt;",
     "New API Project Repository:": "Dépôt du projet New API :",
     "New API pricing API": "New API pricing API",
-    "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "Les upstreams New API exposent une API de tarification publique, les ratios se synchronisent donc automatiquement ; les upstreams Sub2API et compatibles OpenAI n'en ont pas et sont listés au tarif standard de la plateforme.",
+    "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "Les upstreams New API et OpenAI /v1/models pricing protocol exposent une API de tarification, les ratios se synchronisent donc automatiquement ; les upstreams Sub2API et compatibles OpenAI n'en ont pas et sont listés au tarif standard de la plateforme.",
     "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently": "Le canal flexible de New API permet de configurer les adresses amont et l’authentification par interface, de choisir le transfert natif ou une conversion de protocole prise en charge, et de configurer séparément la liste des modèles et la consultation du solde",
     "New Format Template": "Modèle nouveau format",
     "New Group": "Nouveau groupe",
@@ -8074,6 +8074,17 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 Votre entreprise. Tous droits réservés.",
     "、": ", ",
     "，": ", ",
-    "，and ": " et "
+    "，and ": " et ",
+    "Price Sync & Risk Control": "Synchronisation des prix et contrôle des risques",
+    "Enable floor protection": "Activer la protection du prix plancher",
+    "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.": "Conserver le prix affiché actuel tant que le coût amont ne dépasse pas le prix minimum sûr ; au-delà, l'augmenter automatiquement.",
+    "Upstream purchase USD/CNY rate": "Taux USD/CNY d'achat amont",
+    "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.": "Taux utilisé pour convertir le coût amont en USD vers la devise de facturation de la plateforme. Il est distinct du taux de recharge USD affiché aux utilisateurs.",
+    "Fee multiplier": "Multiplicateur de frais",
+    "Multiplier applied to the upstream cost to cover payment and channel fees.": "Multiplicateur appliqué au coût amont pour couvrir les frais de paiement et de canal.",
+    "Minimum profit multiplier": "Multiplicateur de profit minimum",
+    "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.": "Multiplicateur de profit minimum appliqué au coût frais inclus pour calculer le prix minimum sûr.",
+    "Floor protection is off: every sync overwrites the listed price with the minimum safe price.": "La protection du prix plancher est désactivée : chaque synchronisation remplace le prix affiché par le prix minimum sûr.",
+    "Save price sync settings": "Enregistrer les paramètres de synchronisation des prix"
   }
 }

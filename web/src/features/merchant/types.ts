@@ -33,9 +33,15 @@ export interface MerchantModelQuote {
  * 商家上游的网关类型。
  *
  * 空字符串表示不声明（自动判定）：New API 系暴露公开价格接口，可自动同步报价；
+ * OpenAI /v1/models 报价协议通过带鉴权的 /v1/models 返回 USD/1M-token 价格；
  * Sub2API / OpenAI 兼容系只有中继端点，报价需手填。
  */
-export type UpstreamKind = '' | 'newapi' | 'sub2api' | 'openai'
+export type UpstreamKind =
+  | ''
+  | 'newapi'
+  | 'sub2api'
+  | 'openai'
+  | 'openai_models_pricing'
 
 export interface MerchantApplication {
   id: number
@@ -63,6 +69,7 @@ export interface UpstreamProbe {
   models?: string[]
   model_count: number
   price_sync_capable: boolean
+  price_sync_protocol?: 'newapi' | 'openai_models_pricing' | ''
   warnings?: string[]
 }
 
@@ -82,6 +89,7 @@ export interface UpstreamRatioPreview {
 export interface MerchantUpstreamProbeResult {
   kind: UpstreamKind
   price_sync_capable: boolean
+  price_sync_protocol?: 'newapi' | 'openai_models_pricing' | ''
   models_endpoint_ok: boolean
   model_count: number
   warnings?: string[]

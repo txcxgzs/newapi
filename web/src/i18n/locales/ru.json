@@ -4008,7 +4008,7 @@
     "New API &lt;noreply@example.com&gt;": "Новый API &lt;noreply@example.com&gt;",
     "New API Project Repository:": "Репозиторий проекта New API:",
     "New API pricing API": "New API pricing API",
-    "New API upstreams expose a public pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "Апстримы New API предоставляют публичный API цен, поэтому коэффициенты синхронизируются автоматически; у апстримов Sub2API и совместимых с OpenAI такого API нет, они публикуются по стандартной цене платформы.",
+    "New API and OpenAI /v1/models pricing protocol upstreams expose a pricing API, so rates sync automatically; Sub2API and OpenAI-compatible upstreams have none and list at the platform standard price.": "Апстримы New API и OpenAI /v1/models pricing protocol предоставляют API цен, поэтому коэффициенты синхронизируются автоматически; у апстримов Sub2API и совместимых с OpenAI такого API нет, они публикуются по стандартной цене платформы.",
     "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently": "Гибкий канал New API позволяет задавать адреса внешних сервисов и аутентификацию для каждого эндпоинта, выбирать прямую пересылку или поддерживаемое преобразование протоколов, а также отдельно настраивать получение списка моделей и запрос баланса",
     "New Format Template": "Шаблон нового формата",
     "New Group": "Новая группа",
@@ -8074,6 +8074,17 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 Ваша Компания. Все права защищены.",
     "、": ", ",
     "，": ", ",
-    "，and ": " и "
+    "，and ": " и ",
+    "Price Sync & Risk Control": "Синхронизация цен и контроль рисков",
+    "Enable floor protection": "Включить защиту минимальной цены",
+    "Keep the current listed price until the upstream cost rises above the minimum safe price; when breached, raise it automatically.": "Сохранять текущую цену, пока стоимость апстрима не превысит минимальную безопасную цену; при превышении повышать её автоматически.",
+    "Upstream purchase USD/CNY rate": "Курс закупки USD/CNY у апстрима",
+    "Exchange rate used to convert upstream USD cost into the platform billing currency. It is separate from the frontend recharge USD exchange rate.": "Курс для пересчёта стоимости апстрима в USD в валюту тарификации платформы. Он не связан с курсом USD для пополнения на фронтенде.",
+    "Fee multiplier": "Множитель комиссии",
+    "Multiplier applied to the upstream cost to cover payment and channel fees.": "Множитель к стоимости апстрима для покрытия платёжных и канальных комиссий.",
+    "Minimum profit multiplier": "Минимальный множитель прибыли",
+    "Minimum profit multiplier applied on top of the fee-inclusive cost to derive the minimum safe price.": "Минимальный множитель прибыли к стоимости с учётом комиссий для расчёта минимальной безопасной цены.",
+    "Floor protection is off: every sync overwrites the listed price with the minimum safe price.": "Защита минимальной цены отключена: каждая синхронизация заменяет цену на минимальную безопасную.",
+    "Save price sync settings": "Сохранить настройки синхронизации цен"
   }
 }
